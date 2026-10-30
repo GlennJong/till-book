@@ -1,5 +1,5 @@
 // Till 自訂 Apps Script（以 vibe-sheets 的 script.code 部署為 Custom.gs）
-// 路由：GET ?action=bootstrap / ?action=summary，POST ?action=orders
+// 路由：GET ?action=bootstrap / ?action=summary，POST ?action=orders；VIBE_ON_EDIT 為商品自動編號
 // 欄位一律以標題名稱讀取，使用者可以自由調整欄位順序或新增自己的欄位
 
 var TILL_TABS = {
@@ -22,12 +22,53 @@ var VIBE_ROUTES = {
   }
 };
 
+// ---------- 商品代碼自動編號 ----------
+
+var TILL_FIRST_PRODUCT_CODE = 1001;
+
+// 使用者編輯商品表後補上商品代碼（vibe-sheets 基礎腳本的 onEdit 補完系統欄位後會呼叫）
+function VIBE_ON_EDIT(e) {
+  if (e && e.range && e.range.getSheet().getName() === TILL_TABS.products) tillAssignProductCodes();
+}
+
+// 有品名但沒有商品代碼的列，依序編為「目前最大的數字代碼 + 1」
+function tillAssignProductCodes() {
+  var sheet = tillSheet(TILL_TABS.products);
+  var values = sheet.getDataRange().getValues();
+  if (values.length < 2) return;
+  var col = tillIndexMap(values[0].map(String));
+  if (col['商品代碼'] === undefined || col['品名'] === undefined) return;
+
+  var lock = LockService.getScriptLock();
+  var hasLock = lock.tryLock(5000);
+  try {
+    var max = TILL_FIRST_PRODUCT_CODE - 1;
+    var missing = [];
+    for (var i = 1; i < values.length; i++) {
+      var code = tillText(values[i][col['商品代碼']]);
+      if (/^\d+$/.test(code)) max = Math.max(max, Number(code));
+      if (!code && tillText(values[i][col['品名']])) missing.push(i + 1);
+    }
+    missing.forEach(function(rowNumber) {
+      var cell = sheet.getRange(rowNumber, col['商品代碼'] + 1);
+      if (tillText(cell.getValue())) return; // 其他請求已經補過
+      max += 1;
+      cell.setValue(String(max));
+    });
+  } finally {
+    if (hasLock) lock.releaseLock();
+  }
+}
+
 // ---------- GET ?action=bootstrap ----------
 
 function tillBootstrap() {
   var warnings = [];
 
+  tillAssignProductCodes();
+
   var seenNames = {};
+  var seenCodes = {};
   var products = [];
   tillReadRecords(TILL_TABS.products).forEach(function(r) {
     var name = tillText(r['品名']);
@@ -42,11 +83,19 @@ function tillBootstrap() {
       return;
     }
     seenNames[name] = true;
+    var code = tillText(r['商品代碼']);
+    if (code && seenCodes[code]) {
+      warnings.push('商品代碼「' + code + '」重複（' + seenCodes[code] + '、' + name + '），掃碼時只會對應到「' + seenCodes[code] + '」');
+      code = '';
+    } else if (code) {
+      seenCodes[code] = name;
+    }
     products.push({
       id: String(r.id),
       name: name,
       price: price,
       category: tillText(r['分類']) || '未分類',
+      code: code,
       imageUrl: toLh3Url(r['圖片連結']),
       // 「總進貨量」舊版叫「備貨數量」
       totalStock: tillNumberOrNull(r['總進貨量'] !== undefined ? r['總進貨量'] : r['備貨數量']),

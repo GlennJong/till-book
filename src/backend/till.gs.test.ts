@@ -59,7 +59,7 @@ class MockSheet {
   }
 }
 
-const PRODUCT_HEADERS = ['is_enabled', '品名', '售價', '分類', '圖片連結', '總進貨量', '目前庫存', '現場數量', '備註', 'id', 'created_at', 'updated_at'];
+const PRODUCT_HEADERS = ['is_enabled', '品名', '售價', '分類', '商品代碼', '圖片連結', '總進貨量', '目前庫存', '現場數量', '備註', 'id', 'created_at', 'updated_at'];
 const BUNDLE_HEADERS = ['is_enabled', '組合名稱', '組合價', '任選件數', '品項 1', '品項 2', '品項 10', 'id', 'created_at', 'updated_at'];
 const PROMO_HEADERS = ['is_enabled', '活動名稱', '滿額門檻', '折抵金額', '贈品 1', '贈品 2', 'id', 'created_at', 'updated_at'];
 const LOG_HEADERS = ['時間', '單號', '類型', '品名', '數量', '定價', '成交單價', '小計', '付款方式', '場次', '說明', '備註', '沖銷單號', '商品編號'];
@@ -138,9 +138,9 @@ beforeEach(() => {
   sheets = {
     商品: new MockSheet('商品', [
       PRODUCT_HEADERS.slice(),
-      product({ is_enabled: true, 品名: '本子 A', 售價: 200, 分類: '本子', 總進貨量: 10, id: 'p-a' }),
-      product({ is_enabled: true, 品名: '吊飾', 售價: 120, id: 'p-b', 圖片連結: 'https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/view?usp=sharing' }),
-      product({ is_enabled: false, 品名: '下架品', 售價: 50, id: 'p-off' })
+      product({ is_enabled: true, 品名: '本子 A', 售價: 200, 分類: '本子', 商品代碼: '1001', 總進貨量: 10, id: 'p-a' }),
+      product({ is_enabled: true, 品名: '吊飾', 售價: 120, 商品代碼: '1002', id: 'p-b', 圖片連結: 'https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/view?usp=sharing' }),
+      product({ is_enabled: false, 品名: '下架品', 售價: 50, 商品代碼: '1003', id: 'p-off' })
     ]),
     組合價: new MockSheet('組合價', [
       BUNDLE_HEADERS.slice(),
@@ -159,12 +159,13 @@ describe('bootstrap', () => {
   it('maps Chinese headers to English keys and filters disabled rows', () => {
     const res = ctx.VIBE_ROUTES.GET.bootstrap({ parameter: {} });
     expect(res.products).toEqual([
-      { id: 'p-a', name: '本子 A', price: 200, category: '本子', imageUrl: '', totalStock: 10, currentStock: 10, onSite: null },
+      { id: 'p-a', name: '本子 A', price: 200, category: '本子', code: '1001', imageUrl: '', totalStock: 10, currentStock: 10, onSite: null },
       {
         id: 'p-b',
         name: '吊飾',
         price: 120,
         category: '未分類',
+        code: '1002',
         imageUrl: 'https://lh3.googleusercontent.com/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345',
         totalStock: null,
         currentStock: null,
@@ -181,6 +182,37 @@ describe('bootstrap', () => {
     load();
     const res = ctx.VIBE_ROUTES.GET.bootstrap({ parameter: {} });
     expect(res.products[0]).toMatchObject({ totalStock: 8, currentStock: 8, onSite: null });
+  });
+
+  it('numbers products without a code after the highest numeric code, including disabled rows', () => {
+    sheets['商品'].rows[2][PRODUCT_HEADERS.indexOf('商品代碼')] = 'ABC';
+    sheets['商品'].rows.push(product({ is_enabled: true, 品名: '新品 1', 售價: 80, id: 'p-n1' }));
+    sheets['商品'].rows.push(product({ is_enabled: true, 品名: '新品 2', 售價: 80, id: 'p-n2' }));
+    sheets['商品'].rows.push(product({ is_enabled: true, 售價: 80, id: 'p-noname' }));
+    const res = ctx.VIBE_ROUTES.GET.bootstrap({ parameter: {} });
+    const codes = sheets['商品'].rows.slice(1).map(r => r[PRODUCT_HEADERS.indexOf('商品代碼')]);
+    // 下架品的 1003 也算在內；自訂的非數字代碼保留；沒有品名的列不編號
+    expect(codes).toEqual(['1001', 'ABC', '1003', '1004', '1005', '']);
+    expect(res.products.map((p: { code: string }) => p.code)).toEqual(['1001', 'ABC', '1004', '1005']);
+  });
+
+  it('starts numbering at 1001 and also runs from the onEdit hook', () => {
+    sheets['商品'].rows.forEach((r, i) => i > 0 && (r[PRODUCT_HEADERS.indexOf('商品代碼')] = ''));
+    const sheet = sheets['商品'];
+    ctx.VIBE_ON_EDIT({ range: { getSheet: () => ({ getName: () => '商品' }) } });
+    expect(sheet.rows.slice(1).map(r => r[PRODUCT_HEADERS.indexOf('商品代碼')])).toEqual(['1001', '1002', '1003']);
+
+    // 其他分頁的編輯不處理
+    sheet.rows[1][PRODUCT_HEADERS.indexOf('商品代碼')] = '';
+    ctx.VIBE_ON_EDIT({ range: { getSheet: () => ({ getName: () => '組合價' }) } });
+    expect(sheet.rows[1][PRODUCT_HEADERS.indexOf('商品代碼')]).toBe('');
+  });
+
+  it('warns about duplicate codes and keeps only the first product on that code', () => {
+    sheets['商品'].rows[2][PRODUCT_HEADERS.indexOf('商品代碼')] = '1001';
+    const res = ctx.VIBE_ROUTES.GET.bootstrap({ parameter: {} });
+    expect(res.products.map((p: { code: string }) => p.code)).toEqual(['1001', '']);
+    expect(res.warnings).toEqual(['商品代碼「1001」重複（本子 A、吊飾），掃碼時只會對應到「本子 A」']);
   });
 
   it('lists recent events newest first without duplicates', () => {

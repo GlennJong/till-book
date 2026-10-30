@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { AlertTriangle, ExternalLink, LogOut, Plus, RefreshCw, X } from 'lucide-react';
+import { AlertTriangle, ChevronRight, ExternalLink, LogOut, Plus, RefreshCw, Tags, X } from 'lucide-react';
 import { simulateNextFailure, type SimulatedFailure } from '../lib/api';
 import type { Connection } from '../lib/connection';
 import { updateSettings, useSettings, type Settings } from '../lib/settings';
 import { useSync } from '../lib/sync';
 import { useCatalog } from '../lib/useCatalog';
+import LabelsScreen from './LabelsScreen';
 
 const REFRESH_MODES: { value: Settings['stockRefreshMode']; label: string; hint: string }[] = [
   { value: 'AFTER_SYNC', label: '結帳同步後', hint: '每次送出訂單順便更新庫存，不多花流量' },
@@ -17,6 +18,7 @@ export default function SettingsScreen({ connection, onDisconnect }: { connectio
   const { refreshNow, refreshing } = useSync();
   const { warnings, syncedAt, pendingCount } = useCatalog();
   const [newMethod, setNewMethod] = useState('');
+  const [showLabels, setShowLabels] = useState(false);
 
   const addMethod = () => {
     const name = newMethod.trim();
@@ -32,6 +34,8 @@ export default function SettingsScreen({ connection, onDisconnect }: { connectio
     }
     onDisconnect();
   };
+
+  if (showLabels) return <LabelsScreen onBack={() => setShowLabels(false)} />;
 
   return (
     <div className="mx-auto flex w-full max-w-md flex-col gap-4 pb-4">
@@ -58,6 +62,15 @@ export default function SettingsScreen({ connection, onDisconnect }: { connectio
           </div>
         )}
       </section>
+
+      <button onClick={() => setShowLabels(true)} className="flex items-center gap-3 rounded-2xl bg-white p-5 text-left">
+        <Tags className="size-5 text-stone-500" />
+        <span className="flex-1">
+          <span className="font-bold">列印條碼標籤</span>
+          <span className="block text-sm text-stone-500">產生 A4 PDF，貼在商品上給掃碼槍或相機掃</span>
+        </span>
+        <ChevronRight className="size-5 text-stone-400" />
+      </button>
 
       <section className="rounded-2xl bg-white p-5">
         <h2 className="font-bold">付款方式</h2>

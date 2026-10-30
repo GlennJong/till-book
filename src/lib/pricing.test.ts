@@ -7,6 +7,7 @@ const product = (id: string, price: number, category = '未分類'): Product => 
   name: id,
   price,
   category,
+  code: '',
   imageUrl: '',
   totalStock: null,
   serverOnSite: null,

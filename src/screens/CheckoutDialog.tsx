@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import Modal from '../components/Modal';
+import NumericKeypad from '../components/NumericKeypad';
 import { placeOrder } from '../lib/outbox';
 import { priceCart, type CartItem, type PricingRules } from '../lib/pricing';
 import { useSettings } from '../lib/settings';
@@ -20,6 +21,8 @@ export default function CheckoutDialog(props: {
   const [received, setReceived] = useState<number | null>(null);
   const [note, setNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // 正在用數字鍵盤輸入的欄位；欄位用 inputMode="none"，不叫出系統鍵盤
+  const [keypadFor, setKeypadFor] = useState<'manualTotal' | 'received' | null>(null);
 
   const manual = manualTotal.trim() === '' ? undefined : Number(manualTotal);
   const manualValid = manual === undefined || (Number.isFinite(manual) && manual >= 0);
@@ -52,13 +55,19 @@ export default function CheckoutDialog(props: {
         整單改價
         <input
           type="number"
-          inputMode="numeric"
+          inputMode="none"
           placeholder="例如 300"
           value={manualTotal}
+          onFocus={() => setKeypadFor('manualTotal')}
           onChange={e => setManualTotal(e.target.value)}
-          className={`w-28 rounded-lg border px-3 py-1.5 ${manualValid ? 'border-stone-300' : 'border-red-500'}`}
+          className={`w-28 rounded-lg border px-3 py-1.5 ${manualValid ? 'border-stone-300' : 'border-red-500'} ${keypadFor === 'manualTotal' ? 'ring-2 ring-stone-900' : ''}`}
         />
       </label>
+      {keypadFor === 'manualTotal' && (
+        <div className="mt-2">
+          <NumericKeypad key="manualTotal" value={manualTotal} onChange={setManualTotal} />
+        </div>
+      )}
 
       <p className="mt-4 mb-2 text-sm font-medium text-stone-600">付款方式</p>
       <div className="grid grid-cols-3 gap-2">
@@ -90,12 +99,22 @@ export default function CheckoutDialog(props: {
       </div>
       <input
         type="number"
-        inputMode="numeric"
+        inputMode="none"
         placeholder="或輸入收到的金額"
         value={received ?? ''}
+        onFocus={() => setKeypadFor('received')}
         onChange={e => setReceived(e.target.value === '' ? null : Number(e.target.value))}
-        className="mt-2 w-full rounded-xl border border-stone-300 px-4 py-2"
+        className={`mt-2 w-full rounded-xl border border-stone-300 px-4 py-2 ${keypadFor === 'received' ? 'ring-2 ring-stone-900' : ''}`}
       />
+      {keypadFor === 'received' && (
+        <div className="mt-2">
+          <NumericKeypad
+            key="received"
+            value={received === null ? '' : String(received)}
+            onChange={v => setReceived(v === '' ? null : Number(v))}
+          />
+        </div>
+      )}
       {change !== null && (
         <p className={`mt-3 text-center text-4xl font-bold ${change < 0 ? 'text-red-600' : 'text-emerald-700'}`}>
           {change < 0 ? `還差 $${-change}` : `找 $${change}`}

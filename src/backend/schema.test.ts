@@ -35,18 +35,18 @@ describe('Till schema', () => {
   it('resolves the stock formula to the right columns', async () => {
     const { create } = await capture();
     const stock = header(create, '商品').find((c: any) => c.userEnteredValue.formulaValue?.startsWith('={"目前庫存"'));
-    // 商品：A is_enabled, B 品名, C 售價, D 分類, E 圖片連結, F 圖片預覽, G 總進貨量, H 目前庫存, I 現場數量, J 備註, K id
+    // 商品：A is_enabled, B 品名, C 售價, D 分類, E 商品代碼, F 圖片連結, G 圖片預覽, H 總進貨量, I 目前庫存, J 現場數量, K 備註, L id
     // 銷售紀錄：E 數量, N 商品編號
     expect(stock.userEnteredValue.formulaValue).toBe(
-      `={"目前庫存"; ARRAYFORMULA(IF(('商品'!K2:K="")+('商品'!G2:G=""), "", '商品'!G2:G - SUMIF('銷售紀錄'!N2:N, '商品'!K2:K, '銷售紀錄'!E2:E)))}`
+      `={"目前庫存"; ARRAYFORMULA(IF(('商品'!L2:L="")+('商品'!H2:H=""), "", '商品'!H2:H - SUMIF('銷售紀錄'!N2:N, '商品'!L2:L, '銷售紀錄'!E2:E)))}`
     );
   });
 
   it('previews Drive images with IMAGE() next to the link', async () => {
     const { create } = await capture();
-    const preview = header(create, '商品')[5];
+    const preview = header(create, '商品')[6];
     expect(preview.userEnteredValue.formulaValue).toBe(
-      `={"圖片預覽"; ARRAYFORMULA(IF('商品'!E2:E="", "", IFERROR(IMAGE("https://lh3.googleusercontent.com/d/" & REGEXEXTRACT('商品'!E2:E, "[-\\w]{25,}") & "=s200-c"), "")))}`
+      `={"圖片預覽"; ARRAYFORMULA(IF('商品'!F2:F="", "", IFERROR(IMAGE("https://lh3.googleusercontent.com/d/" & REGEXEXTRACT('商品'!F2:F, "[-\\w]{25,}") & "=s200-c"), "")))}`
     );
   });
 
@@ -69,15 +69,18 @@ describe('Till schema', () => {
     ]);
   });
 
-  it('adds the duplicate-name highlight, text formats and log protection', async () => {
+  it('adds the duplicate highlights, text formats and log protection', async () => {
     const { setup } = await capture();
-    const rule = setup.requests.find((r: any) => r.addConditionalFormatRule).addConditionalFormatRule.rule;
-    expect(rule.booleanRule.condition.values[0].userEnteredValue).toBe('=AND($B2<>"", COUNTIF($B$2:$B, $B2)>1)');
+    const rules = setup.requests.filter((r: any) => r.addConditionalFormatRule).map((r: any) => r.addConditionalFormatRule.rule);
+    expect(rules.map((rule: any) => rule.booleanRule.condition.values[0].userEnteredValue)).toEqual([
+      '=AND($B2<>"", COUNTIF($B$2:$B, $B2)>1)',
+      '=AND($E2<>"", COUNTIF($E$2:$E, $E2)>1)'
+    ]);
     const textCols = setup.requests
       .filter((r: any) => r.repeatCell?.cell.userEnteredFormat.numberFormat)
-      .map((r: any) => r.repeatCell.range.startColumnIndex);
-    // 單號、場次、沖銷單號、商品編號
-    expect(textCols).toEqual([1, 9, 12, 13]);
+      .map((r: any) => [r.repeatCell.range.sheetId, r.repeatCell.range.startColumnIndex]);
+    // 銷售紀錄：單號、場次、沖銷單號、商品編號；商品：商品代碼
+    expect(textCols).toEqual([[3, 1], [3, 9], [3, 12], [3, 13], [0, 4]]);
     expect(setup.requests.some((r: any) => r.addProtectedRange?.protectedRange.range.sheetId === 3 && !r.addProtectedRange.protectedRange.range.startColumnIndex)).toBe(true);
   });
 
@@ -95,7 +98,7 @@ describe('Till schema', () => {
     const dims = setup.requests.filter((r: any) => r.updateDimensionProperties).map((r: any) => r.updateDimensionProperties);
     expect(dims).toEqual([
       { range: { sheetId: 0, dimension: 'ROWS', startIndex: 1, endIndex: 201 }, properties: { pixelSize: 56 }, fields: 'pixelSize' },
-      { range: { sheetId: 0, dimension: 'COLUMNS', startIndex: 5, endIndex: 6 }, properties: { pixelSize: 64 }, fields: 'pixelSize' }
+      { range: { sheetId: 0, dimension: 'COLUMNS', startIndex: 6, endIndex: 7 }, properties: { pixelSize: 64 }, fields: 'pixelSize' }
     ]);
   });
 
@@ -129,7 +132,7 @@ describe('Till schema', () => {
     ]);
     // 每個商品依 id 對應銷售紀錄（N 商品編號、C 類型、J 場次）
     const table = layout.rows[5].values[0].userEnteredValue.formulaValue;
-    expect(table).toContain(`FILTER('商品'!K2:K, '商品'!K2:K<>"")`);
+    expect(table).toContain(`FILTER('商品'!L2:L, '商品'!L2:L<>"")`);
     expect(table).toContain(`SUMPRODUCT(('銷售紀錄'!N2:N=id) * ('銷售紀錄'!C2:C=lineType) * mask, field)`);
     expect(table).toContain(`('銷售紀錄'!J2:J=IF($B$1="未指定場次", "", $B$1))`);
 

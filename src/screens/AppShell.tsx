@@ -78,7 +78,7 @@ function Shell({ connection, onDisconnect }: { connection: Connection; onDisconn
       )}
 
       <main className="flex min-h-0 flex-1 flex-col px-4 pb-20">
-        {tab === 'register' && <RegisterScreen onCheckedOut={orderNo => setToast(`已結帳 ${orderNo}`)} />}
+        {tab === 'register' && <RegisterScreen onCheckedOut={orderNo => setToast(`已結帳 ${orderNo}`)} onNotice={setToast} />}
         {tab === 'orders' && <OrdersScreen />}
         {tab === 'summary' && <SummaryScreen scriptUrl={connection.scriptUrl} />}
         {tab === 'settings' && <SettingsScreen connection={connection} onDisconnect={onDisconnect} />}

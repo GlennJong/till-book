@@ -4,7 +4,7 @@ import scriptCode from './till.gs.js?raw';
 export const SHEET_PREFIX = 'till-';
 
 // 修改 till.gs.js 後要調高版本號，App 會提示既有的表格升級腳本
-export const SCRIPT_VERSION = '1.5.0';
+export const SCRIPT_VERSION = '1.6.0';
 
 // 版本號注入腳本，bootstrap 會回傳，App 據此提示升級
 export const TILL_SCRIPT = { code: `var TILL_SCRIPT_VERSION = '${SCRIPT_VERSION}';\n${scriptCode}`, version: SCRIPT_VERSION };
@@ -19,6 +19,7 @@ export const TILL_TABS: TabDefinition[] = [
       { name: '品名', type: 'string', note: '必填，不可重複' },
       { name: '售價', type: 'number', note: '必填' },
       { name: '分類', type: 'string', note: '留白會歸到「未分類」' },
+      { name: '商品代碼', type: 'string', note: '留白會自動編號（1001 起）。印在條碼標籤上、掃碼時用來找商品；可以自己改，但不可重複，改了要重印標籤' },
       { name: '圖片連結', type: 'string', note: '貼上 Google Drive 分享連結（需設為「知道連結的任何人」可檢視）；留白顯示品名首字' },
       {
         name: '圖片預覽',
@@ -43,10 +44,10 @@ export const TILL_TABS: TabDefinition[] = [
       { name: '備註', type: 'string', note: '給自己看的記事（例如「10/5 再刷 50 本」），系統不會讀取' }
     ],
     demoRows: [
-      { 品名: '範例本子 A', 售價: 200, 分類: '本子', 總進貨量: 20 },
-      { 品名: '範例本子 B', 售價: 150, 分類: '本子', 總進貨量: 20 },
-      { 品名: '範例吊飾', 售價: 120, 分類: '吊飾', 總進貨量: 30 },
-      { 品名: '範例貼紙', 售價: 30, 分類: '贈品', 總進貨量: 50 }
+      { 品名: '範例本子 A', 售價: 200, 分類: '本子', 商品代碼: '1001', 總進貨量: 20 },
+      { 品名: '範例本子 B', 售價: 150, 分類: '本子', 商品代碼: '1002', 總進貨量: 20 },
+      { 品名: '範例吊飾', 售價: 120, 分類: '吊飾', 商品代碼: '1003', 總進貨量: 30 },
+      { 品名: '範例貼紙', 售價: 30, 分類: '贈品', 商品代碼: '1004', 總進貨量: 50 }
     ]
   },
   {
@@ -177,9 +178,27 @@ const IMAGE_PREVIEW_WIDTH = 64;
 const cell = (value: string) =>
   value.startsWith('=') ? { userEnteredValue: { formulaValue: value } } : { userEnteredValue: { stringValue: value } };
 
+// 商品表中不可重複的欄位：重複時標紅
+const uniqueColumnRule = (sheetId: number, col: number, index: number) => {
+  const letter = toColumnLetter(col);
+  return {
+    addConditionalFormatRule: {
+      index,
+      rule: {
+        ranges: [{ sheetId, startRowIndex: 1, startColumnIndex: col, endColumnIndex: col + 1 }],
+        booleanRule: {
+          condition: {
+            type: 'CUSTOM_FORMULA',
+            values: [{ userEnteredValue: `=AND($${letter}2<>"", COUNTIF($${letter}$2:$${letter}, $${letter}2)>1)` }]
+          },
+          format: { backgroundColor: { red: 0.98, green: 0.8, blue: 0.8 } }
+        }
+      }
+    }
+  };
+};
+
 export const tillSetupRequests = ({ sheetIds, columnIndex, resolveRange }: SetupContext): object[] => {
-  const nameCol = columnIndex('商品', '品名');
-  const nameLetter = toColumnLetter(nameCol);
 
   // 銷售紀錄裡的單號、編號一律存成文字，避免被 Sheets 自動轉成數字或日期
   const textColumns = ['單號', '場次', '沖銷單號', '商品編號'].map(col => ({
@@ -195,24 +214,21 @@ export const tillSetupRequests = ({ sheetIds, columnIndex, resolveRange }: Setup
     }
   }));
 
+  // 商品代碼存成文字，避免被轉成數字（例如吃掉開頭的 0）
+  const productCodeCol = columnIndex('商品', '商品代碼');
+  const productCodeText = {
+    repeatCell: {
+      range: { sheetId: sheetIds['商品'], startRowIndex: 1, startColumnIndex: productCodeCol, endColumnIndex: productCodeCol + 1 },
+      cell: { userEnteredFormat: { numberFormat: { type: 'TEXT' } } },
+      fields: 'userEnteredFormat.numberFormat'
+    }
+  };
+
   return [
-    // 品名重複時標紅
-    {
-      addConditionalFormatRule: {
-        index: 0,
-        rule: {
-          ranges: [{ sheetId: sheetIds['商品'], startRowIndex: 1, startColumnIndex: nameCol, endColumnIndex: nameCol + 1 }],
-          booleanRule: {
-            condition: {
-              type: 'CUSTOM_FORMULA',
-              values: [{ userEnteredValue: `=AND($${nameLetter}2<>"", COUNTIF($${nameLetter}$2:$${nameLetter}, $${nameLetter}2)>1)` }]
-            },
-            format: { backgroundColor: { red: 0.98, green: 0.8, blue: 0.8 } }
-          }
-        }
-      }
-    },
+    uniqueColumnRule(sheetIds['商品'], columnIndex('商品', '品名'), 0),
+    uniqueColumnRule(sheetIds['商品'], productCodeCol, 1),
     ...textColumns,
+    productCodeText,
     // 商品：資料列加高、圖片預覽欄加寬，並垂直置中
     {
       updateDimensionProperties: {

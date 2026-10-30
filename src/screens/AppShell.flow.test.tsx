@@ -8,7 +8,7 @@ import AppShell from './AppShell';
 
 // 端到端：在 jsdom 裡操作收銀畫面，驗證每個動作都正確反映到（模擬的）Google 試算表
 
-const PRODUCT_HEADERS = ['is_enabled', '品名', '售價', '分類', '圖片連結', '圖片預覽', '總進貨量', '目前庫存', '現場數量', '備註', 'id', 'created_at', 'updated_at'];
+const PRODUCT_HEADERS = ['is_enabled', '品名', '售價', '分類', '商品代碼', '圖片連結', '圖片預覽', '總進貨量', '目前庫存', '現場數量', '備註', 'id', 'created_at', 'updated_at'];
 const BUNDLE_HEADERS = ['is_enabled', '組合名稱', '組合價', '任選件數', '品項 1', '品項 2', 'id', 'created_at', 'updated_at'];
 const PROMO_HEADERS = ['is_enabled', '活動名稱', '滿額門檻', '折抵金額', '贈品 1', '贈品 2', 'id', 'created_at', 'updated_at'];
 const LOG_HEADERS = ['時間', '單號', '類型', '品名', '數量', '定價', '成交單價', '小計', '付款方式', '場次', '說明', '備註', '沖銷單號', '商品編號'];
@@ -29,8 +29,8 @@ beforeEach(async () => {
   const sheets = {
     商品: new MockSheet('商品', [
       PRODUCT_HEADERS.slice(),
-      row(PRODUCT_HEADERS, { is_enabled: true, 品名: '本子 A', 售價: 200, 分類: '本子', 總進貨量: 10, id: 'A' }),
-      row(PRODUCT_HEADERS, { is_enabled: true, 品名: '本子 B', 售價: 150, 分類: '本子', 總進貨量: 10, id: 'B' }),
+      row(PRODUCT_HEADERS, { is_enabled: true, 品名: '本子 A', 售價: 200, 分類: '本子', 商品代碼: '1001', 總進貨量: 10, id: 'A' }),
+      row(PRODUCT_HEADERS, { is_enabled: true, 品名: '本子 B', 售價: 150, 分類: '本子', 商品代碼: '1002', 總進貨量: 10, id: 'B' }),
       row(PRODUCT_HEADERS, { is_enabled: true, 品名: '貼紙', 售價: 30, 分類: '贈品', 總進貨量: 1, id: 'S' })
     ]),
     組合價: new MockSheet('組合價', [BUNDLE_HEADERS.slice(), row(BUNDLE_HEADERS, { is_enabled: true, 組合名稱: '本子任選 2', 組合價: 300, 任選件數: 2, '品項 1': '【分類】本子', id: 'b1' })]),
@@ -187,6 +187,42 @@ describe('register flow', () => {
     await waitFor(() => expect(log()).toHaveLength(2));
     expect(log()[1]['場次']).toBe('CWT70');
     await waitFor(() => expect(onSiteOf('本子 A')).toBe(2));
+  });
+
+  it('barcode scanner, code entry and keypad all add products to the cart', async () => {
+    render(<AppShell connection={connection} onDisconnect={() => {}} />);
+    await productButton('本子 A');
+    // 沒有代碼的貼紙由同步時自動編號
+    await waitFor(() => expect(productRow('貼紙')[PRODUCT_HEADERS.indexOf('商品代碼')]).toBe('1003'));
+
+    // 掃碼槍：快速輸入 + Enter（用實體按鍵位置，不看 key）
+    const scan = (digits: string) => {
+      for (const d of digits) fireEvent.keyDown(window, { code: `Digit${d}`, key: 'ㄅ' });
+      fireEvent.keyDown(window, { code: 'Enter', key: 'Enter' });
+    };
+    scan('1002');
+    scan('1002');
+    await waitFor(() => expect(within(cartPanel()).getByText('本子 B')).toBeTruthy());
+    expect(within(cartPanel()).getByText('2')).toBeTruthy();
+
+    // 找不到的代碼
+    scan('9999');
+    expect(await screen.findByText('找不到商品代碼 9999')).toBeTruthy();
+
+    // 手動輸入代碼（數字鍵盤）；視窗開著時掃碼槍不作用
+    fireEvent.click(screen.getByRole('button', { name: /輸入代碼/ }));
+    const dialog = await screen.findByRole('dialog', { name: '輸入商品代碼' });
+    scan('1002');
+    for (const d of '1001') fireEvent.click(within(dialog).getByRole('button', { name: `數字 ${d}` }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '加入購物車' }));
+    await waitFor(() => expect(within(cartPanel()).getByText('本子 A')).toBeTruthy());
+    expect(within(cartPanel()).getByText('2')).toBeTruthy();
+
+    // 改價用數字鍵盤：第一次按會取代原價
+    fireEvent.click(screen.getAllByRole('button', { name: '改價：本子 A' })[0]);
+    const price = await screen.findByRole('dialog', { name: '改價：本子 A' });
+    for (const d of '180') fireEvent.click(within(price).getByRole('button', { name: `數字 ${d}` }));
+    expect(within(price).getByDisplayValue('180')).toBeTruthy();
   });
 
   it('settings: add a payment method and use it at checkout', async () => {

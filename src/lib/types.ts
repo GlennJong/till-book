@@ -5,6 +5,7 @@ export interface BootstrapResponse {
     name: string;
     price: number;
     category: string;
+    code?: string;                // 1.6.0 起：商品代碼（條碼內容）
     imageUrl: string;
     totalStock?: number | null;   // 1.5.0 起；舊版叫 initialStock
     initialStock?: number | null;
@@ -24,6 +25,7 @@ export interface Product {
   name: string;
   price: number;
   category: string;
+  code: string;                // 商品代碼（條碼內容）；'' = 沒有
   imageUrl: string;            // 已由 GAS 轉換為 lh3 網址
   totalStock: number | null;   // 總進貨量；null = 不追蹤庫存
   serverStock: number | null;  // 最近一次從伺服器取得的目前庫存

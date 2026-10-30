@@ -1,24 +1,39 @@
-import { useMemo, useReducer, useState } from 'react';
-import { Gift, Minus, Plus, ShoppingCart, Trash2 } from 'lucide-react';
+import { useEffect, useMemo, useReducer, useState } from 'react';
+import { Camera, Gift, Hash, Minus, Plus, ShoppingCart, Trash2 } from 'lucide-react';
 import Modal from '../components/Modal';
+import NumericKeypad from '../components/NumericKeypad';
 import ProductImage from '../components/ProductImage';
 import { cartReducer } from '../lib/cart';
+import { beep } from '../lib/feedback';
 import { priceCart } from '../lib/pricing';
+import { useBarcodeScanner } from '../lib/scanner';
 import { useCatalog } from '../lib/useCatalog';
 import { useWakeLock } from '../lib/useWakeLock';
+import CameraScanner from './CameraScanner';
 import CheckoutDialog from './CheckoutDialog';
 import EventBar from './EventBar';
 
+const FLASH_MS = 400;
+
 const ALL = '全部';
 
-export default function RegisterScreen({ onCheckedOut }: { onCheckedOut: (orderNo: string) => void }) {
+export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOut: (orderNo: string) => void; onNotice: (message: string) => void }) {
   const { products, rules, stock, onSite, categories } = useCatalog();
   const [cart, dispatch] = useReducer(cartReducer, []);
   const [category, setCategory] = useState(ALL);
   const [editingPrice, setEditingPrice] = useState<string | null>(null);
   const [checkingOut, setCheckingOut] = useState(false);
   const [cartOpen, setCartOpen] = useState(false);
+  const [enteringCode, setEnteringCode] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [flashId, setFlashId] = useState<string | null>(null);
   useWakeLock(true);
+
+  useEffect(() => {
+    if (!flashId) return;
+    const timer = setTimeout(() => setFlashId(null), FLASH_MS);
+    return () => clearTimeout(timer);
+  }, [flashId]);
 
   const pricing = useMemo(() => priceCart(cart, rules), [cart, rules]);
   const inCart = (id: string) => cart.find(i => i.productId === id)?.quantity ?? 0;
@@ -37,6 +52,21 @@ export default function RegisterScreen({ onCheckedOut }: { onCheckedOut: (orderN
     }
     dispatch({ type: 'add', productId: id });
   };
+
+  // 掃碼槍、相機、手動輸入代碼共用：找到就加一件並嗶一聲，找不到播錯誤音並提示
+  const addByCode = (raw: string) => {
+    const code = raw.trim().toUpperCase();
+    const product = code ? products.find(p => p.code.toUpperCase() === code) : undefined;
+    if (!product) {
+      beep('error');
+      onNotice(`找不到商品代碼 ${raw.trim()}`);
+      return;
+    }
+    beep('ok');
+    setFlashId(product.id);
+    addProduct(product.id);
+  };
+  useBarcodeScanner(addByCode);
 
   const visible = category === ALL ? products : products.filter(p => p.category === category);
   const itemCount = cart.reduce((sum, i) => sum + i.quantity, 0);
@@ -57,7 +87,17 @@ export default function RegisterScreen({ onCheckedOut }: { onCheckedOut: (orderN
   return (
     <div className="flex min-h-0 flex-1 gap-4">
       <div className="flex min-w-0 flex-1 flex-col">
-        <EventBar />
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <EventBar />
+          <div className="ml-auto flex gap-2">
+            <button onClick={() => setEnteringCode(true)} className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1.5 text-sm">
+              <Hash className="size-4 text-stone-500" /> 輸入代碼
+            </button>
+            <button onClick={() => setCameraOpen(true)} className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1.5 text-sm">
+              <Camera className="size-4 text-stone-500" /> 相機掃碼
+            </button>
+          </div>
+        </div>
         <nav aria-label="商品分類" className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-3">
           {[ALL, ...categories].map(c => (
             <button
@@ -82,7 +122,7 @@ export default function RegisterScreen({ onCheckedOut }: { onCheckedOut: (orderN
                 <button
                   key={p.id}
                   onClick={() => addProduct(p.id)}
-                  className={`relative flex min-h-16 flex-col overflow-hidden rounded-xl border bg-white text-left active:scale-[0.98] ${count > 0 ? 'border-stone-900' : 'border-stone-200'}`}
+                  className={`relative flex min-h-16 flex-col overflow-hidden rounded-xl border bg-white text-left transition-shadow active:scale-[0.98] ${count > 0 ? 'border-stone-900' : 'border-stone-200'} ${flashId === p.id ? 'ring-4 ring-emerald-400' : ''}`}
                 >
                   <ProductImage name={p.name} imageUrl={p.imageUrl} className={`aspect-square w-full ${soldOut ? 'opacity-40 grayscale' : ''}`} />
                   <div className="p-2">
@@ -144,6 +184,18 @@ export default function RegisterScreen({ onCheckedOut }: { onCheckedOut: (orderN
           onClose={() => setEditingPrice(null)}
         />
       )}
+
+      {enteringCode && (
+        <CodeEntryDialog
+          onSubmit={code => {
+            setEnteringCode(false);
+            addByCode(code);
+          }}
+          onClose={() => setEnteringCode(false)}
+        />
+      )}
+
+      {cameraOpen && <CameraScanner onCode={addByCode} onClose={() => setCameraOpen(false)} />}
 
       {checkingOut && (
         <CheckoutDialog
@@ -259,12 +311,13 @@ function ManualPriceDialog(props: {
       <p className="text-sm text-stone-500">原價 ${props.product.price}。改價的品項不會參與組合價。</p>
       <input
         type="number"
-        inputMode="numeric"
+        inputMode="none"
         autoFocus
         value={value}
         onChange={e => setValue(e.target.value)}
-        className="mt-3 w-full rounded-xl border border-stone-300 px-4 py-3 text-2xl font-bold"
+        className="mt-3 mb-3 w-full rounded-xl border border-stone-300 px-4 py-3 text-2xl font-bold"
       />
+      <NumericKeypad value={value} onChange={setValue} />
       <div className="mt-4 flex gap-2">
         {props.current !== undefined && (
           <button onClick={() => props.onSave(undefined)} className="h-12 flex-1 rounded-xl bg-stone-100 font-medium">
@@ -279,6 +332,28 @@ function ManualPriceDialog(props: {
           確定
         </button>
       </div>
+    </Modal>
+  );
+}
+
+// 掃不到條碼時，看標籤上印的數字手動輸入
+function CodeEntryDialog({ onSubmit, onClose }: { onSubmit: (code: string) => void; onClose: () => void }) {
+  const [code, setCode] = useState('');
+  return (
+    <Modal title="輸入商品代碼" onClose={onClose}>
+      <input
+        inputMode="none"
+        autoFocus
+        value={code}
+        onChange={e => setCode(e.target.value)}
+        onKeyDown={e => e.key === 'Enter' && code.trim() && onSubmit(code)}
+        placeholder="標籤上的數字"
+        className="mb-3 w-full rounded-xl border border-stone-300 px-4 py-3 text-center font-mono text-3xl font-bold tracking-widest"
+      />
+      <NumericKeypad value={code} onChange={setCode} maxLength={20} />
+      <button onClick={() => onSubmit(code)} disabled={!code.trim()} className="mt-3 h-14 w-full rounded-xl bg-stone-900 text-lg font-bold text-white disabled:opacity-40">
+        加入購物車
+      </button>
     </Modal>
   );
 }
