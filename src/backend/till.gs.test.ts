@@ -59,10 +59,10 @@ class MockSheet {
   }
 }
 
-const PRODUCT_HEADERS = ['is_enabled', '品名', '售價', '分類', '圖片連結', '備貨數量', '目前庫存', 'id', 'created_at', 'updated_at'];
+const PRODUCT_HEADERS = ['is_enabled', '品名', '售價', '分類', '圖片連結', '總進貨量', '目前庫存', '現場數量', '備註', 'id', 'created_at', 'updated_at'];
 const BUNDLE_HEADERS = ['is_enabled', '組合名稱', '組合價', '任選件數', '品項 1', '品項 2', '品項 10', 'id', 'created_at', 'updated_at'];
 const PROMO_HEADERS = ['is_enabled', '活動名稱', '滿額門檻', '折抵金額', '贈品 1', '贈品 2', 'id', 'created_at', 'updated_at'];
-const LOG_HEADERS = ['時間', '單號', '類型', '品名', '數量', '定價', '成交單價', '小計', '付款方式', '說明', '備註', '沖銷單號', '商品編號'];
+const LOG_HEADERS = ['時間', '單號', '類型', '品名', '數量', '定價', '成交單價', '小計', '付款方式', '場次', '說明', '備註', '沖銷單號', '商品編號'];
 
 let sheets: Record<string, MockSheet>;
 let ctx: Record<string, any>;
@@ -71,11 +71,12 @@ let ctx: Record<string, any>;
 const recalcStock = () => {
   const products = sheets['商品'];
   const log = sheets['銷售紀錄'];
-  const p = (h: string) => PRODUCT_HEADERS.indexOf(h);
+  const p = (h: string) => (products.rows[0] as string[]).indexOf(h);
   const l = (h: string) => LOG_HEADERS.indexOf(h);
+  const total = p('總進貨量') === -1 ? p('備貨數量') : p('總進貨量');
   products.rows.slice(1).forEach(row => {
     const id = row[p('id')];
-    const initial = row[p('備貨數量')];
+    const initial = row[total];
     if (!id || initial === '') {
       row[p('目前庫存')] = '';
       return;
@@ -137,7 +138,7 @@ beforeEach(() => {
   sheets = {
     商品: new MockSheet('商品', [
       PRODUCT_HEADERS.slice(),
-      product({ is_enabled: true, 品名: '本子 A', 售價: 200, 分類: '本子', 備貨數量: 10, id: 'p-a' }),
+      product({ is_enabled: true, 品名: '本子 A', 售價: 200, 分類: '本子', 總進貨量: 10, id: 'p-a' }),
       product({ is_enabled: true, 品名: '吊飾', 售價: 120, id: 'p-b', 圖片連結: 'https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/view?usp=sharing' }),
       product({ is_enabled: false, 品名: '下架品', 售價: 50, id: 'p-off' })
     ]),
@@ -158,18 +159,39 @@ describe('bootstrap', () => {
   it('maps Chinese headers to English keys and filters disabled rows', () => {
     const res = ctx.VIBE_ROUTES.GET.bootstrap({ parameter: {} });
     expect(res.products).toEqual([
-      { id: 'p-a', name: '本子 A', price: 200, category: '本子', imageUrl: '', initialStock: 10, currentStock: 10 },
+      { id: 'p-a', name: '本子 A', price: 200, category: '本子', imageUrl: '', totalStock: 10, currentStock: 10, onSite: null },
       {
         id: 'p-b',
         name: '吊飾',
         price: 120,
         category: '未分類',
         imageUrl: 'https://lh3.googleusercontent.com/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345',
-        initialStock: null,
-        currentStock: null
+        totalStock: null,
+        currentStock: null,
+        onSite: null
       }
     ]);
     expect(res.warnings).toEqual([]);
+    expect(res.recentEvents).toEqual([]);
+  });
+
+  it('still reads stock from sheets created with the old 備貨數量 column', () => {
+    const legacy = ['is_enabled', '品名', '售價', '備貨數量', '目前庫存', 'id'];
+    sheets['商品'] = new MockSheet('商品', [legacy, [true, '本子', 100, 8, '', 'old-1']]);
+    load();
+    const res = ctx.VIBE_ROUTES.GET.bootstrap({ parameter: {} });
+    expect(res.products[0]).toMatchObject({ totalStock: 8, currentStock: 8, onSite: null });
+  });
+
+  it('lists recent events newest first without duplicates', () => {
+    post([
+      order('NO-1', [line('p-a', 1, 200)], { event: 'FF44' }),
+      order('NO-2', [line('p-a', 1, 200)], { event: 'CWT70' }),
+      order('NO-3', [line('p-a', 1, 200)]),
+      order('NO-4', [line('p-a', 1, 200), line('p-b', 1, 120)], { event: 'FF45' }),
+      order('NO-5', [line('p-a', 1, 200)], { event: 'CWT70' })
+    ]);
+    expect(ctx.VIBE_ROUTES.GET.bootstrap({ parameter: {} }).recentEvents).toEqual(['CWT70', 'FF45', 'FF44']);
   });
 
   it('collects bundle items in numeric order, including user-added columns', () => {
@@ -206,7 +228,7 @@ describe('bootstrap', () => {
   });
 
   it('backfills system columns for rows the onEdit trigger missed', () => {
-    sheets['商品'].rows.push(product({ is_enabled: false, 品名: '新商品', 售價: 80, 備貨數量: 5 }));
+    sheets['商品'].rows.push(product({ is_enabled: false, 品名: '新商品', 售價: 80, 總進貨量: 5 }));
     const res = ctx.VIBE_ROUTES.GET.bootstrap({ parameter: {} });
     const added = res.products.find((p: { name: string }) => p.name === '新商品');
     expect(added).toMatchObject({ id: 'uuid-1', currentStock: 5 });
@@ -234,7 +256,11 @@ describe('bootstrap', () => {
 describe('orders', () => {
   it('writes lines by header name and returns fresh stock', () => {
     const res = post([order('251029-120000-ABCD', [line('p-a', 2, 200)])]);
-    expect(res).toEqual({ success: true, results: [{ orderNo: '251029-120000-ABCD', status: 'written' }], stock: { 'p-a': 8, 'p-b': null } });
+    expect(res).toEqual({
+      success: true,
+      results: [{ orderNo: '251029-120000-ABCD', status: 'written' }],
+      stock: { 'p-a': { stock: 8, onSite: null }, 'p-b': { stock: null, onSite: null } }
+    });
     const written = sheets['銷售紀錄'].rows[1];
     expect(written[LOG_HEADERS.indexOf('單號')]).toBe('251029-120000-ABCD');
     expect(written[LOG_HEADERS.indexOf('小計')]).toBe(400);
@@ -252,7 +278,7 @@ describe('orders', () => {
       { orderNo: 'NO-2', status: 'duplicate' }
     ]);
     expect(sheets['銷售紀錄'].getLastRow()).toBe(3);
-    expect(res.stock['p-a']).toBe(8);
+    expect(res.stock['p-a'].stock).toBe(8);
   });
 
   it('reverts restore stock and cannot be applied twice', () => {
@@ -260,8 +286,37 @@ describe('orders', () => {
     const revert = (no: string) => order(no, [line('p-a', -3, 200)], { revertOf: 'NO-1' });
     const res = post([revert('R-1'), revert('R-2')]);
     expect(res.results.map((r: { status: string }) => r.status)).toEqual(['written', 'already_reverted']);
-    expect(res.stock['p-a']).toBe(10);
+    expect(res.stock['p-a'].stock).toBe(10);
     expect(post([revert('R-3')]).results[0].status).toBe('already_reverted');
+  });
+
+  it('records the event on every line', () => {
+    post([order('NO-1', [line('p-a', 1, 200), line('p-b', 1, 120)], { event: 'CWT70' }), order('NO-2', [line('p-a', 1, 200)])]);
+    expect(sheets['銷售紀錄'].rows.slice(1).map(r => r[LOG_HEADERS.indexOf('場次')])).toEqual(['CWT70', 'CWT70', '']);
+  });
+
+  it('deducts on-site quantity together with stock, and reverts add it back', () => {
+    const onSite = (id: string) => sheets['商品'].rows.find(r => r[PRODUCT_HEADERS.indexOf('id')] === id)![PRODUCT_HEADERS.indexOf('現場數量')];
+    sheets['商品'].rows[1][PRODUCT_HEADERS.indexOf('現場數量')] = 4;
+
+    const sale = order('NO-1', [line('p-a', 3, 200), line('p-b', 1, 120), { ...line('p-a', 1, 0), lineType: '贈品' }]);
+    const res = post([sale]);
+    expect(res.stock['p-a']).toEqual({ stock: 6, onSite: 0 });
+    // 留白的現場數量不追蹤，不會被寫成負數
+    expect(onSite('p-b')).toBe('');
+    expect(res.stock['p-b']).toEqual({ stock: null, onSite: null });
+
+    // 重送不重複扣
+    post([sale]);
+    expect(onSite('p-a')).toBe(0);
+
+    // 扣到負數照樣記錄
+    post([order('NO-2', [line('p-a', 2, 200)])]);
+    expect(onSite('p-a')).toBe(-2);
+
+    post([order('R-1', [line('p-a', -3, 200), line('p-b', -1, 120), { ...line('p-a', -1, 0), lineType: '贈品' }], { revertOf: 'NO-1' })]);
+    expect(onSite('p-a')).toBe(2);
+    expect(onSite('p-b')).toBe('');
   });
 
   it('adds rows when the sales log grid is full instead of failing', () => {
@@ -292,5 +347,16 @@ describe('summary', () => {
     post([order('R-1', [line('p-a', -2, 200)], { revertOf: 'NO-1' })]);
     const res = ctx.VIBE_ROUTES.GET.summary({ parameter: { date: '2026-10-29' } });
     expect(res).toEqual({ date: '2026-10-29', total: 120, byPaymentMethod: { 現金: 0, 'LINE Pay': 120 }, orderCount: 2, revertCount: 1 });
+  });
+
+  it('also totals the whole event across days when asked', () => {
+    post([
+      order('NO-1', [line('p-a', 1, 200)], { event: 'CWT70' }),
+      order('NO-2', [line('p-b', 1, 120)], { event: 'CWT70', createdAt: '2026-10-30T04:00:00.000Z' }),
+      order('NO-3', [line('p-a', 1, 200)])
+    ]);
+    const res = ctx.VIBE_ROUTES.GET.summary({ parameter: { date: '2026-10-29', event: 'CWT70' } });
+    expect(res.total).toBe(400);
+    expect(res.event).toEqual({ name: 'CWT70', total: 320, byPaymentMethod: { 現金: 320 }, orderCount: 2, revertCount: 0 });
   });
 });

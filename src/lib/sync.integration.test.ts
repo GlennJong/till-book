@@ -4,7 +4,8 @@ import { createGasEnvironment, loadTillScript, MockSheet, routeFetchTo, type Gas
 import { simulateNextFailure } from './api';
 import { refreshCatalog } from './catalog';
 import { db } from './db';
-import { availableStock, healOutbox, placeOrder, revertOrder, syncOutbox } from './outbox';
+import { availableOnSite, availableStock, healOutbox, placeOrder, revertOrder, syncOutbox } from './outbox';
+import { startEvent, toDateKey } from './event';
 import type { OrderLine } from './types';
 
 // 前端同步引擎 × 部署後的 GAS（vibe-sheets 基礎腳本 + till.gs.js）完整往返測試
@@ -93,6 +94,29 @@ describe('happy path', () => {
     await syncOutbox(SCRIPT_URL);
     expect(net.requests.filter(r => r.action === 'orders')).toHaveLength(1);
     expect(logOrderNos()).toEqual([a.orderNo, b.orderNo]);
+  });
+});
+
+describe('events and on-site quantity', () => {
+  it('stamps the current event on orders, and reverts keep the original event', async () => {
+    await startEvent('CWT70', toDateKey(new Date()));
+    const order = await sell('P1', 1);
+    expect(order.event).toBe('CWT70');
+    const revert = await revertOrder(order.orderNo);
+    expect(revert.event).toBe('CWT70');
+  });
+
+  it('expired events are not stamped', async () => {
+    await db.settings.put({ key: 'currentEvent', value: { name: 'FF44', endsAt: new Date(Date.now() - 1000).toISOString() } });
+    expect((await sell('P1', 1)).event).toBe('');
+  });
+
+  it('on-site remaining subtracts orders that are not synced yet', async () => {
+    await db.products.update('P1', { serverOnSite: 3 });
+    await sell('P1', 2);
+    const products = await db.products.toArray();
+    expect(availableOnSite(products, await unsynced()).get('P1')).toBe(1);
+    expect(availableOnSite(products, await unsynced()).get('P2')).toBeNull();
   });
 });
 

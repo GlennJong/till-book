@@ -8,10 +8,10 @@ import AppShell from './AppShell';
 
 // 端到端：在 jsdom 裡操作收銀畫面，驗證每個動作都正確反映到（模擬的）Google 試算表
 
-const PRODUCT_HEADERS = ['is_enabled', '品名', '售價', '分類', '圖片連結', '圖片預覽', '備貨數量', '目前庫存', 'id', 'created_at', 'updated_at'];
+const PRODUCT_HEADERS = ['is_enabled', '品名', '售價', '分類', '圖片連結', '圖片預覽', '總進貨量', '目前庫存', '現場數量', '備註', 'id', 'created_at', 'updated_at'];
 const BUNDLE_HEADERS = ['is_enabled', '組合名稱', '組合價', '任選件數', '品項 1', '品項 2', 'id', 'created_at', 'updated_at'];
 const PROMO_HEADERS = ['is_enabled', '活動名稱', '滿額門檻', '折抵金額', '贈品 1', '贈品 2', 'id', 'created_at', 'updated_at'];
-const LOG_HEADERS = ['時間', '單號', '類型', '品名', '數量', '定價', '成交單價', '小計', '付款方式', '說明', '備註', '沖銷單號', '商品編號'];
+const LOG_HEADERS = ['時間', '單號', '類型', '品名', '數量', '定價', '成交單價', '小計', '付款方式', '場次', '說明', '備註', '沖銷單號', '商品編號'];
 
 const connection = { fileId: 'FILE', name: '測試場', scriptUrl: 'https://script.google.com/macros/s/TEST/exec' };
 
@@ -20,19 +20,18 @@ let env: GasEnvironment;
 const row = (headers: string[], fields: Record<string, unknown>) => headers.map(h => (h in fields ? fields[h] : '')) as any[];
 const log = () =>
   env.sheets['銷售紀錄'].rows.slice(1).map(r => Object.fromEntries(LOG_HEADERS.map((h, i) => [h, r[i]])) as Record<string, any>);
-const stockOf = (name: string) => {
-  const r = env.sheets['商品'].rows.find(x => x[1] === name)!;
-  return r[PRODUCT_HEADERS.indexOf('目前庫存')];
-};
+const productRow = (name: string) => env.sheets['商品'].rows.find(x => x[1] === name)!;
+const stockOf = (name: string) => productRow(name)[PRODUCT_HEADERS.indexOf('目前庫存')];
+const onSiteOf = (name: string) => productRow(name)[PRODUCT_HEADERS.indexOf('現場數量')];
 
 beforeEach(async () => {
   await Promise.all(db.tables.map(t => t.clear()));
   const sheets = {
     商品: new MockSheet('商品', [
       PRODUCT_HEADERS.slice(),
-      row(PRODUCT_HEADERS, { is_enabled: true, 品名: '本子 A', 售價: 200, 分類: '本子', 備貨數量: 10, id: 'A' }),
-      row(PRODUCT_HEADERS, { is_enabled: true, 品名: '本子 B', 售價: 150, 分類: '本子', 備貨數量: 10, id: 'B' }),
-      row(PRODUCT_HEADERS, { is_enabled: true, 品名: '貼紙', 售價: 30, 分類: '贈品', 備貨數量: 1, id: 'S' })
+      row(PRODUCT_HEADERS, { is_enabled: true, 品名: '本子 A', 售價: 200, 分類: '本子', 總進貨量: 10, id: 'A' }),
+      row(PRODUCT_HEADERS, { is_enabled: true, 品名: '本子 B', 售價: 150, 分類: '本子', 總進貨量: 10, id: 'B' }),
+      row(PRODUCT_HEADERS, { is_enabled: true, 品名: '貼紙', 售價: 30, 分類: '贈品', 總進貨量: 1, id: 'S' })
     ]),
     組合價: new MockSheet('組合價', [BUNDLE_HEADERS.slice(), row(BUNDLE_HEADERS, { is_enabled: true, 組合名稱: '本子任選 2', 組合價: 300, 任選件數: 2, '品項 1': '【分類】本子', id: 'b1' })]),
     滿額活動: new MockSheet('滿額活動', [PROMO_HEADERS.slice(), row(PROMO_HEADERS, { is_enabled: true, 活動名稱: '滿 300 送貼紙', 滿額門檻: 300, '贈品 1': '貼紙', id: 'm1' })]),
@@ -40,8 +39,10 @@ beforeEach(async () => {
   };
   const recalc = () => {
     sheets['商品'].rows.slice(1).forEach(r => {
-      const sold = sheets['銷售紀錄'].rows.slice(1).filter(l => l[12] === r[8]).reduce((s, l) => s + Number(l[4]), 0);
-      r[PRODUCT_HEADERS.indexOf('目前庫存')] = Number(r[PRODUCT_HEADERS.indexOf('備貨數量')]) - sold;
+      const p = (h: string) => PRODUCT_HEADERS.indexOf(h);
+      const l = (h: string) => LOG_HEADERS.indexOf(h);
+      const sold = sheets['銷售紀錄'].rows.slice(1).filter(x => x[l('商品編號')] === r[p('id')]).reduce((s, x) => s + Number(x[l('數量')]), 0);
+      r[p('目前庫存')] = Number(r[p('總進貨量')]) - sold;
     });
   };
   env = createGasEnvironment(sheets, { customCode: loadTillScript(), recalc });
@@ -141,7 +142,7 @@ describe('register flow', () => {
   });
 
   it('sold-out products ask before selling', async () => {
-    env.sheets['商品'].rows[3][PRODUCT_HEADERS.indexOf('備貨數量')] = 0;
+    env.sheets['商品'].rows[3][PRODUCT_HEADERS.indexOf('總進貨量')] = 0;
     env.recalc();
     render(<AppShell connection={connection} onDisconnect={() => {}} />);
     await screen.findByText('SOLD OUT');
@@ -150,6 +151,42 @@ describe('register flow', () => {
     expect(screen.getByText('點商品加入購物車')).toBeTruthy();
     fireEvent.click(await productButton('貼紙'));
     expect(within(cartPanel()).getByText('貼紙')).toBeTruthy();
+  });
+
+  it('event + on-site quantity: set the event, sell, and both reach the sheet', async () => {
+    productRow('本子 A')[PRODUCT_HEADERS.indexOf('現場數量')] = 2;
+    render(<AppShell connection={connection} onDisconnect={() => {}} />);
+    expect(within(await productButton('本子 A')).getByText('現場 2')).toBeTruthy();
+    expect(within(await productButton('本子 B')).getByText('剩 10')).toBeTruthy();
+
+    // 設定場次
+    fireEvent.click(screen.getByRole('button', { name: '設定場次' }));
+    fireEvent.change(await screen.findByPlaceholderText('例如 CWT70'), { target: { value: 'CWT70' } });
+    fireEvent.click(screen.getByRole('button', { name: '確定' }));
+    expect(await screen.findByText('CWT70')).toBeTruthy();
+
+    fireEvent.click(await productButton('本子 A'));
+    fireEvent.click(within(cartPanel()).getByText('結帳'));
+    fireEvent.click(await screen.findByRole('button', { name: '完成結帳（現金）' }));
+
+    await waitFor(() => expect(log()).toHaveLength(1));
+    expect(log()[0]['場次']).toBe('CWT70');
+    await waitFor(() => expect(onSiteOf('本子 A')).toBe(1));
+    expect(stockOf('本子 A')).toBe(9);
+    await screen.findByText('已同步');
+    expect(within(await productButton('本子 A')).getByText('現場 1')).toBeTruthy();
+
+    // 結算頁多一張「本場次」
+    tab('結算');
+    expect(await screen.findByText('本場次 CWT70')).toBeTruthy();
+
+    // 沖銷沿用原單的場次，現場數量加回
+    tab('訂單');
+    fireEvent.click(await screen.findByText(log()[0]['單號']));
+    fireEvent.click(await screen.findByText('沖銷這張單'));
+    await waitFor(() => expect(log()).toHaveLength(2));
+    expect(log()[1]['場次']).toBe('CWT70');
+    await waitFor(() => expect(onSiteOf('本子 A')).toBe(2));
   });
 
   it('settings: add a payment method and use it at checkout', async () => {

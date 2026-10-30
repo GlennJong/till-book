@@ -8,7 +8,8 @@ const product = (id: string, price: number, category = '未分類'): Product => 
   price,
   category,
   imageUrl: '',
-  initialStock: null,
+  totalStock: null,
+  serverOnSite: null,
   serverStock: null
 });
 

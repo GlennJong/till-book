@@ -48,8 +48,10 @@ function tillBootstrap() {
       price: price,
       category: tillText(r['分類']) || '未分類',
       imageUrl: toLh3Url(r['圖片連結']),
-      initialStock: tillNumberOrNull(r['備貨數量']),
-      currentStock: tillNumberOrNull(r['目前庫存'])
+      // 「總進貨量」舊版叫「備貨數量」
+      totalStock: tillNumberOrNull(r['總進貨量'] !== undefined ? r['總進貨量'] : r['備貨數量']),
+      currentStock: tillNumberOrNull(r['目前庫存']),
+      onSite: tillNumberOrNull(r['現場數量'])
     });
   });
 
@@ -106,6 +108,7 @@ function tillBootstrap() {
     products: products,
     bundles: bundles,
     promotions: promotions,
+    recentEvents: tillRecentEvents(),
     warnings: warnings,
     serverTime: new Date().toISOString(),
     scriptVersion: typeof TILL_SCRIPT_VERSION === 'undefined' ? null : TILL_SCRIPT_VERSION
@@ -130,6 +133,7 @@ function tillPostOrders(e) {
     var rows = [];
     var seenOrders = {};
     var seenReverts = {};
+    var onSiteDelta = {};
 
     orders.forEach(function(order) {
       var orderNo = order && order.orderNo ? String(order.orderNo) : '';
@@ -151,6 +155,8 @@ function tillPostOrders(e) {
       if (revertOf) seenReverts[revertOf] = true;
       order.lines.forEach(function(line) {
         rows.push(tillLogRow(headers, order, line));
+        // 沖銷的數量是負的，扣減等於加回
+        if (line.productId) onSiteDelta[line.productId] = (onSiteDelta[line.productId] || 0) + Number(line.quantity || 0);
       });
       results.push({ orderNo: orderNo, status: 'written' });
     });
@@ -159,6 +165,7 @@ function tillPostOrders(e) {
       var startRow = sheet.getLastRow() + 1;
       tillEnsureRows(sheet, startRow + rows.length - 1);
       sheet.getRange(startRow, 1, rows.length, headers.length).setValues(rows);
+      tillDeductOnSite(onSiteDelta);
       SpreadsheetApp.flush(); // 讓「目前庫存」公式重算
     }
 
@@ -179,6 +186,7 @@ function tillLogRow(headers, order, line) {
     '成交單價': line.unitPrice,
     '小計': line.subtotal,
     '付款方式': order.paymentMethod || '',
+    '場次': order.event || '',
     '說明': line.description || '',
     '備註': order.note || '',
     '沖銷單號': order.revertOf || '',
@@ -190,45 +198,103 @@ function tillLogRow(headers, order, line) {
   });
 }
 
+// 現場數量有值的商品，依這批寫入的數量直接扣減（呼叫端已持有 Lock，重送的單號不會走到這裡）
+function tillDeductOnSite(delta) {
+  if (Object.keys(delta).length === 0) return;
+  var sheet = tillSheet(TILL_TABS.products);
+  var values = sheet.getDataRange().getValues();
+  if (values.length < 2) return;
+  var col = tillIndexMap(values[0].map(String));
+  if (col.id === undefined || col['現場數量'] === undefined) return;
+
+  for (var i = 1; i < values.length; i++) {
+    var id = String(values[i][col.id]);
+    var onSite = tillNumberOrNull(values[i][col['現場數量']]);
+    if (!delta[id] || onSite === null) continue;
+    // 只寫有變動的格子，不覆蓋使用者同時在改的其他格
+    sheet.getRange(i + 1, col['現場數量'] + 1).setValue(onSite - delta[id]);
+  }
+}
+
 function tillStockMap() {
   var stock = {};
   // 已持有 orders 的 Lock，這裡不補系統欄位（第二個參數略過補欄位流程）
   tillReadRecords(TILL_TABS.products, true).forEach(function(r) {
-    if (r.id) stock[String(r.id)] = tillNumberOrNull(r['目前庫存']);
+    if (r.id) stock[String(r.id)] = { stock: tillNumberOrNull(r['目前庫存']), onSite: tillNumberOrNull(r['現場數量']) };
   });
   return stock;
 }
 
-// ---------- GET ?action=summary&date=YYYY-MM-DD ----------
+// 最近用過的場次名稱（新到舊、去重），給 App 自動完成；只讀「場次」欄的最後幾百列
+var TILL_RECENT_EVENT_ROWS = 500;
+var TILL_RECENT_EVENT_LIMIT = 10;
+
+function tillRecentEvents() {
+  var sheet = tillSheet(TILL_TABS.log);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  var col = tillIndexMap(sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String));
+  if (col['場次'] === undefined) return [];
+
+  var firstRow = Math.max(2, lastRow - TILL_RECENT_EVENT_ROWS + 1);
+  var values = sheet.getRange(firstRow, col['場次'] + 1, lastRow - firstRow + 1, 1).getValues();
+  var events = [];
+  for (var i = values.length - 1; i >= 0 && events.length < TILL_RECENT_EVENT_LIMIT; i--) {
+    var name = tillText(values[i][0]);
+    if (name && events.indexOf(name) === -1) events.push(name);
+  }
+  return events;
+}
+
+// ---------- GET ?action=summary&date=YYYY-MM-DD&event=場次 ----------
 
 function tillSummary(e) {
   var timeZone = Session.getScriptTimeZone();
-  var date = (e.parameter && e.parameter.date) || Utilities.formatDate(new Date(), timeZone, 'yyyy-MM-dd');
+  var params = e.parameter || {};
+  var date = params.date || Utilities.formatDate(new Date(), timeZone, 'yyyy-MM-dd');
+  var eventName = tillText(params.event);
 
+  var day = tillSummaryTotals();
+  var event = eventName ? tillSummaryTotals() : null;
+
+  tillReadRecords(TILL_TABS.log).forEach(function(r) {
+    if (event && tillText(r['場次']) === eventName) event.add(r);
+    var time = r['時間'] instanceof Date ? r['時間'] : new Date(r['時間']);
+    if (isNaN(time.getTime())) return;
+    if (Utilities.formatDate(time, timeZone, 'yyyy-MM-dd') === date) day.add(r);
+  });
+
+  var result = day.result();
+  result.date = date;
+  if (event) {
+    result.event = event.result();
+    result.event.name = eventName;
+  }
+  return result;
+}
+
+function tillSummaryTotals() {
   var total = 0;
   var byPaymentMethod = {};
   var orders = {};
   var reverts = {};
-
-  tillReadRecords(TILL_TABS.log).forEach(function(r) {
-    var time = r['時間'] instanceof Date ? r['時間'] : new Date(r['時間']);
-    if (isNaN(time.getTime())) return;
-    if (Utilities.formatDate(time, timeZone, 'yyyy-MM-dd') !== date) return;
-
-    var subtotal = tillNumberOrNull(r['小計']) || 0;
-    var method = tillText(r['付款方式']) || '未指定';
-    total += subtotal;
-    byPaymentMethod[method] = (byPaymentMethod[method] || 0) + subtotal;
-    if (tillText(r['沖銷單號'])) reverts[r['單號']] = true;
-    else orders[r['單號']] = true;
-  });
-
   return {
-    date: date,
-    total: total,
-    byPaymentMethod: byPaymentMethod,
-    orderCount: Object.keys(orders).length,
-    revertCount: Object.keys(reverts).length
+    add: function(r) {
+      var subtotal = tillNumberOrNull(r['小計']) || 0;
+      var method = tillText(r['付款方式']) || '未指定';
+      total += subtotal;
+      byPaymentMethod[method] = (byPaymentMethod[method] || 0) + subtotal;
+      if (tillText(r['沖銷單號'])) reverts[r['單號']] = true;
+      else orders[r['單號']] = true;
+    },
+    result: function() {
+      return {
+        total: total,
+        byPaymentMethod: byPaymentMethod,
+        orderCount: Object.keys(orders).length,
+        revertCount: Object.keys(reverts).length
+      };
+    }
   };
 }
 

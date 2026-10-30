@@ -20,13 +20,14 @@ const header = (create: any, tab: string) =>
 afterEach(() => vi.unstubAllGlobals());
 
 describe('Till schema', () => {
-  it('creates the five tabs with the helper tab hidden', async () => {
+  it('creates the six tabs with the helper tab hidden', async () => {
     const { create } = await capture();
     expect(create.sheets.map((s: any) => [s.properties.title, s.properties.hidden])).toEqual([
       ['商品', false],
       ['組合價', false],
       ['滿額活動', false],
       ['銷售紀錄', false],
+      ['銷量統計', false],
       ['_選單', true]
     ]);
   });
@@ -34,10 +35,10 @@ describe('Till schema', () => {
   it('resolves the stock formula to the right columns', async () => {
     const { create } = await capture();
     const stock = header(create, '商品').find((c: any) => c.userEnteredValue.formulaValue?.startsWith('={"目前庫存"'));
-    // 商品：A is_enabled, B 品名, C 售價, D 分類, E 圖片連結, F 圖片預覽, G 備貨數量, H 目前庫存, I id
-    // 銷售紀錄：E 數量, M 商品編號
+    // 商品：A is_enabled, B 品名, C 售價, D 分類, E 圖片連結, F 圖片預覽, G 總進貨量, H 目前庫存, I 現場數量, J 備註, K id
+    // 銷售紀錄：E 數量, N 商品編號
     expect(stock.userEnteredValue.formulaValue).toBe(
-      `={"目前庫存"; ARRAYFORMULA(IF(('商品'!I2:I="")+('商品'!G2:G=""), "", '商品'!G2:G - SUMIF('銷售紀錄'!M2:M, '商品'!I2:I, '銷售紀錄'!E2:E)))}`
+      `={"目前庫存"; ARRAYFORMULA(IF(('商品'!K2:K="")+('商品'!G2:G=""), "", '商品'!G2:G - SUMIF('銷售紀錄'!N2:N, '商品'!K2:K, '銷售紀錄'!E2:E)))}`
     );
   });
 
@@ -63,7 +64,8 @@ describe('Till schema', () => {
       .map((r: any) => [r.setDataValidation.range.sheetId, r.setDataValidation.rule.condition.values[0].userEnteredValue]);
     expect(ranges).toEqual([
       ...Array.from({ length: 8 }, () => [1, `='_選單'!A2:A`]),
-      ...Array.from({ length: 4 }, () => [2, `='商品'!B2:B`])
+      ...Array.from({ length: 4 }, () => [2, `='商品'!B2:B`]),
+      [4, `='_選單'!B2:B`]
     ]);
   });
 
@@ -74,7 +76,8 @@ describe('Till schema', () => {
     const textCols = setup.requests
       .filter((r: any) => r.repeatCell?.cell.userEnteredFormat.numberFormat)
       .map((r: any) => r.repeatCell.range.startColumnIndex);
-    expect(textCols).toEqual([1, 11, 12]);
+    // 單號、場次、沖銷單號、商品編號
+    expect(textCols).toEqual([1, 9, 12, 13]);
     expect(setup.requests.some((r: any) => r.addProtectedRange?.protectedRange.range.sheetId === 3 && !r.addProtectedRange.protectedRange.range.startColumnIndex)).toBe(true);
   });
 
@@ -108,6 +111,30 @@ describe('Till schema', () => {
       [1, 0, 1, 2],
       [2, 0, 1, 2]
     ]);
+  });
+
+  it('lays out the sales stats tab with an event picker and formulas', async () => {
+    const { setup } = await capture();
+    const layout = setup.requests.find((r: any) => r.updateCells?.start.sheetId === 4).updateCells;
+    const text = layout.rows.map((row: any) =>
+      row.values.map((v: any) => v.userEnteredValue.stringValue ?? v.userEnteredValue.formulaValue.slice(0, 4))
+    );
+    expect(text).toEqual([
+      ['場次', '全部'],
+      ['實收', '=LET', '商品金額', '=LET', '折扣', '=LET'],
+      ['售出件數', '=LET', '贈出件數', '=LET'],
+      [],
+      ['品名', '售出', '贈出', '商品金額'],
+      ['=LET']
+    ]);
+    // 每個商品依 id 對應銷售紀錄（N 商品編號、C 類型、J 場次）
+    const table = layout.rows[5].values[0].userEnteredValue.formulaValue;
+    expect(table).toContain(`FILTER('商品'!K2:K, '商品'!K2:K<>"")`);
+    expect(table).toContain(`SUMPRODUCT(('銷售紀錄'!N2:N=id) * ('銷售紀錄'!C2:C=lineType) * mask, field)`);
+    expect(table).toContain(`('銷售紀錄'!J2:J=IF($B$1="未指定場次", "", $B$1))`);
+
+    const protection = setup.requests.find((r: any) => r.addProtectedRange?.protectedRange.range.sheetId === 4).addProtectedRange.protectedRange;
+    expect(protection.unprotectedRanges).toEqual([{ sheetId: 4, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 1, endColumnIndex: 2 }]);
   });
 
   it('ships the GAS script with a version', () => {

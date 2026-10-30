@@ -40,7 +40,8 @@ export default function OrdersScreen() {
                   {order.status !== 'SYNCED' && <CloudOff className="size-4 text-amber-600" aria-label="待同步" />}
                 </p>
                 <p className="text-sm text-stone-500">
-                  {new Date(order.createdAt).toLocaleTimeString()} · {order.paymentMethod}
+                  {new Date(order.createdAt).toLocaleString()} · {order.paymentMethod}
+                  {order.event && ` · ${order.event}`}
                   {order.revertOf && ` · 沖銷 ${order.revertOf}`}
                   {reverted && ' · 已沖銷'}
                 </p>

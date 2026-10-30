@@ -6,11 +6,14 @@ export interface BootstrapResponse {
     price: number;
     category: string;
     imageUrl: string;
-    initialStock: number | null;
+    totalStock?: number | null;   // 1.5.0 起；舊版叫 initialStock
+    initialStock?: number | null;
     currentStock: number | null;
+    onSite?: number | null;       // 1.5.0 起
   }[];
   bundles: BundleRecord[];
   promotions: PromotionRecord[];
+  recentEvents?: string[]; // 1.5.0 起：最近用過的場次名稱，新到舊
   warnings: string[];
   serverTime: string;
   scriptVersion?: string; // 1.2.0 起才有；沒有代表腳本過舊
@@ -22,8 +25,9 @@ export interface Product {
   price: number;
   category: string;
   imageUrl: string;            // 已由 GAS 轉換為 lh3 網址
-  initialStock: number | null; // null = 不追蹤庫存
+  totalStock: number | null;   // 總進貨量；null = 不追蹤庫存
   serverStock: number | null;  // 最近一次從伺服器取得的目前庫存
+  serverOnSite: number | null; // 最近一次從伺服器取得的現場數量；null = 不追蹤現場
 }
 
 // 組合價、滿額活動以試算表原始內容保存，計價時再對應到商品（Phase 2）
@@ -63,6 +67,7 @@ export interface OutboxOrder {
   retryCount: number;
   nextRetryAt: number;
   paymentMethod: string;
+  event?: string; // 下單當下的場次名稱；'' 或沒有 = 未指定。沖銷沿用原單
   note: string;
   lines: OrderLine[];
   finalTotal: number;

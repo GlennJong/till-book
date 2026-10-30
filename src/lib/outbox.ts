@@ -1,5 +1,6 @@
 import { callScript } from './api';
 import { db } from './db';
+import { getActiveEventName } from './event';
 import type { OrderLine, OutboxOrder, Product } from './types';
 
 // 本機交易佇列（見 spec 6.2–6.4）
@@ -20,9 +21,11 @@ export function createOrderNo(date = new Date()) {
   return `${day}-${time}-${suffix}`;
 }
 
-export async function placeOrder(input: { lines: OrderLine[]; paymentMethod: string; note?: string }) {
+// event 沒有傳時，使用這台裝置目前設定的場次
+export async function placeOrder(input: { lines: OrderLine[]; paymentMethod: string; note?: string; event?: string }) {
   if (input.lines.length === 0) throw new Error('購物車是空的');
   const now = new Date();
+  const event = input.event ?? (await getActiveEventName(now));
   const order: OutboxOrder = {
     orderNo: createOrderNo(now),
     createdAt: now.toISOString(),
@@ -31,6 +34,7 @@ export async function placeOrder(input: { lines: OrderLine[]; paymentMethod: str
     retryCount: 0,
     nextRetryAt: 0,
     paymentMethod: input.paymentMethod,
+    event,
     note: input.note ?? '',
     lines: input.lines,
     finalTotal: input.lines.reduce((sum, l) => sum + l.subtotal, 0)
@@ -64,6 +68,7 @@ export async function revertOrder(orderNo: string) {
       retryCount: 0,
       nextRetryAt: 0,
       paymentMethod: original.paymentMethod,
+      event: original.event ?? '',
       note: original.note,
       lines: original.lines.map(l => ({ ...l, quantity: -l.quantity, subtotal: -l.subtotal })),
       finalTotal: -original.finalTotal
@@ -79,21 +84,34 @@ export async function healOutbox() {
 }
 
 // 可用庫存 = 伺服器庫存 − 尚未寫入試算表的單據用量
-export function availableStock(products: Product[], unsynced: OutboxOrder[]) {
+export const availableStock = (products: Product[], unsynced: OutboxOrder[]) =>
+  available(products, unsynced, p => p.serverStock);
+
+// 現場剩餘：同樣的算法，GAS 寫入時才會扣減試算表上的現場數量
+export const availableOnSite = (products: Product[], unsynced: OutboxOrder[]) =>
+  available(products, unsynced, p => p.serverOnSite ?? null);
+
+function available(products: Product[], unsynced: OutboxOrder[], server: (p: Product) => number | null) {
   const used = new Map<string, number>();
   unsynced.forEach(order =>
     order.lines.forEach(line => {
       if (line.productId) used.set(line.productId, (used.get(line.productId) ?? 0) + line.quantity);
     })
   );
-  return new Map(products.map(p => [p.id, p.serverStock === null ? null : p.serverStock - (used.get(p.id) ?? 0)]));
+  return new Map(
+    products.map(p => {
+      const value = server(p);
+      return [p.id, value === null ? null : value - (used.get(p.id) ?? 0)];
+    })
+  );
 }
 
 interface OrdersResponse {
   success: boolean;
   error?: string;
   results: { orderNo: string; status: 'written' | 'duplicate' | 'already_reverted' | 'invalid' }[];
-  stock: Record<string, number | null>;
+  // 1.5.0 起為 { stock, onSite }；更早的腳本只回傳庫存數字
+  stock: Record<string, { stock: number | null; onSite: number | null } | number | null>;
 }
 
 export interface SyncResult {
@@ -135,6 +153,7 @@ async function runSync(scriptUrl: string, applyStock: boolean): Promise<SyncResu
           createdAt: o.createdAt,
           revertOf: o.revertOf,
           paymentMethod: o.paymentMethod,
+          event: o.event ?? '',
           note: o.note,
           lines: o.lines
         }))
@@ -152,8 +171,11 @@ async function runSync(scriptUrl: string, applyStock: boolean): Promise<SyncResu
       }
       // 單據轉為 SYNCED 與更新伺服器庫存放在同一個 transaction，可用庫存才不會短暫算錯
       if (applyStock) {
-        for (const [id, stock] of Object.entries(res.stock || {})) {
-          await db.products.update(id, { serverStock: stock });
+        for (const [id, value] of Object.entries(res.stock || {})) {
+          await db.products.update(
+            id,
+            value !== null && typeof value === 'object' ? { serverStock: value.stock, serverOnSite: value.onSite } : { serverStock: value }
+          );
         }
       }
     });

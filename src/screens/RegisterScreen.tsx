@@ -7,11 +7,12 @@ import { priceCart } from '../lib/pricing';
 import { useCatalog } from '../lib/useCatalog';
 import { useWakeLock } from '../lib/useWakeLock';
 import CheckoutDialog from './CheckoutDialog';
+import EventBar from './EventBar';
 
 const ALL = '全部';
 
 export default function RegisterScreen({ onCheckedOut }: { onCheckedOut: (orderNo: string) => void }) {
-  const { products, rules, stock, categories } = useCatalog();
+  const { products, rules, stock, onSite, categories } = useCatalog();
   const [cart, dispatch] = useReducer(cartReducer, []);
   const [category, setCategory] = useState(ALL);
   const [editingPrice, setEditingPrice] = useState<string | null>(null);
@@ -21,16 +22,18 @@ export default function RegisterScreen({ onCheckedOut }: { onCheckedOut: (orderN
 
   const pricing = useMemo(() => priceCart(cart, rules), [cart, rules]);
   const inCart = (id: string) => cart.find(i => i.productId === id)?.quantity ?? 0;
+  // 有填現場數量的商品看現場剩餘，否則看總庫存；null 代表不追蹤
   const remaining = (id: string) => {
-    const available = stock.get(id);
-    return available === null || available === undefined ? null : available - inCart(id);
+    const site = onSite.get(id);
+    const tracked = site ?? stock.get(id) ?? null;
+    return { left: tracked === null ? null : tracked - inCart(id), isOnSite: site !== null && site !== undefined };
   };
 
   const addProduct = (id: string) => {
-    const left = remaining(id);
+    const { left, isOnSite } = remaining(id);
     if (left !== null && left <= 0) {
       const name = products.find(p => p.id === id)?.name;
-      if (!window.confirm(`「${name}」庫存不足，仍要賣出嗎？（例如預購、展後寄送）`)) return;
+      if (!window.confirm(`「${name}」${isOnSite ? '現場數量' : '庫存'}不足，仍要賣出嗎？（例如預購、展後寄送）`)) return;
     }
     dispatch({ type: 'add', productId: id });
   };
@@ -54,6 +57,7 @@ export default function RegisterScreen({ onCheckedOut }: { onCheckedOut: (orderN
   return (
     <div className="flex min-h-0 flex-1 gap-4">
       <div className="flex min-w-0 flex-1 flex-col">
+        <EventBar />
         <nav aria-label="商品分類" className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-3">
           {[ALL, ...categories].map(c => (
             <button
@@ -71,7 +75,7 @@ export default function RegisterScreen({ onCheckedOut }: { onCheckedOut: (orderN
         ) : (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(7.5rem,1fr))] gap-2 pb-28 lg:pb-4">
             {visible.map(p => {
-              const left = remaining(p.id);
+              const { left, isOnSite } = remaining(p.id);
               const soldOut = left !== null && left <= 0;
               const count = inCart(p.id);
               return (
@@ -85,7 +89,11 @@ export default function RegisterScreen({ onCheckedOut }: { onCheckedOut: (orderN
                     <p className="line-clamp-2 text-sm leading-tight font-medium">{p.name}</p>
                     <p className="mt-1 flex items-baseline justify-between">
                       <span className="font-bold">${p.price}</span>
-                      {left !== null && <span className={`text-xs ${soldOut ? 'text-red-600' : 'text-stone-500'}`}>剩 {left}</span>}
+                      {left !== null && (
+                        <span className={`text-xs ${soldOut ? 'text-red-600' : 'text-stone-500'}`}>
+                          {isOnSite ? '現場' : '剩'} {left}
+                        </span>
+                      )}
                     </p>
                   </div>
                   {soldOut && (
