@@ -8,7 +8,7 @@ const product = (id: string, imageUrl: string): Product => ({
   id,
   name: id,
   price: 100,
-  category: '未分類',
+  categories: ['未分類'],
   code: '',
   imageUrl,
   totalStock: null,

@@ -20,8 +20,9 @@ export async function refreshCatalog(scriptUrl: string) {
   await db.transaction('rw', [db.products, db.bundles, db.promotions, db.settings], async () => {
     await Promise.all([db.products.clear(), db.bundles.clear(), db.promotions.clear()]);
     await db.products.bulkPut(
-      data.products.map(({ currentStock, totalStock, initialStock, onSite, code, ...product }) => ({
+      data.products.map(({ currentStock, totalStock, initialStock, onSite, code, category, categories, ...product }) => ({
         ...product,
+        categories: categories ?? [category || '未分類'],
         code: code ?? '',
         totalStock: totalStock ?? initialStock ?? null,
         serverStock: currentStock,

@@ -26,3 +26,30 @@ export function cartReducer(cart: CartItem[], action: CartAction): CartItem[] {
       return [];
   }
 }
+
+// 購物車 + 復原紀錄：記住最近 MAX_UNDO 步操作前的購物車，可以一步步往回退
+// 結帳完成（reset）後清空紀錄；已結帳的單據要用沖銷處理
+
+export const MAX_UNDO = 20;
+
+export interface CartState {
+  items: CartItem[];
+  history: { items: CartItem[]; action: CartAction }[];
+}
+
+export type CartStateAction = CartAction | { type: 'undo' } | { type: 'reset' };
+
+export const EMPTY_CART: CartState = { items: [], history: [] };
+
+export function cartStateReducer(state: CartState, action: CartStateAction): CartState {
+  if (action.type === 'undo') {
+    const last = state.history.at(-1);
+    return last ? { items: last.items, history: state.history.slice(0, -1) } : state;
+  }
+  if (action.type === 'reset') return EMPTY_CART;
+
+  const items = cartReducer(state.items, action);
+  // 沒有改變的操作（例如清空空的購物車）不記進復原紀錄
+  if (JSON.stringify(items) === JSON.stringify(state.items)) return state;
+  return { items, history: [...state.history, { items: state.items, action }].slice(-MAX_UNDO) };
+}

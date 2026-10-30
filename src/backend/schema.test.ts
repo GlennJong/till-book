@@ -53,7 +53,8 @@ describe('Till schema', () => {
   it('builds the bundle item dropdown source from product names and categories', async () => {
     const { create } = await capture();
     expect(header(create, '_選單')[0].userEnteredValue.formulaValue).toBe(
-      `={"選項"; ARRAYFORMULA(LET(items, { '商品'!B2:B; ARRAYFORMULA(IF('商品'!D2:D="", "", "【分類】"&'商品'!D2:D)) }, IFERROR(SORT(UNIQUE(FILTER(items, items<>""))), "")))}`
+      // 分類以逗號拆開，每個分類各一個選項
+      `={"選項"; ARRAYFORMULA(LET(tags, FLATTEN(ARRAYFORMULA(IFERROR(TRIM(SPLIT('商品'!D2:D, ",")), ""))), items, { '商品'!B2:B; IF(tags="", "", "【分類】"&tags) }, IFERROR(SORT(UNIQUE(FILTER(items, items<>""))), "")))}`
     );
   });
 

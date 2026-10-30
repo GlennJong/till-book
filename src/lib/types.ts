@@ -4,7 +4,8 @@ export interface BootstrapResponse {
     id: string;
     name: string;
     price: number;
-    category: string;
+    categories?: string[];        // 1.7.0 起：分類可以有多個
+    category?: string;            // 1.7.0 以前：單一分類
     code?: string;                // 1.6.0 起：商品代碼（條碼內容）
     imageUrl: string;
     totalStock?: number | null;   // 1.5.0 起；舊版叫 initialStock
@@ -24,7 +25,7 @@ export interface Product {
   id: string;
   name: string;
   price: number;
-  category: string;
+  categories: string[];        // 至少一個；留白時為 ['未分類']
   code: string;                // 商品代碼（條碼內容）；'' = 沒有
   imageUrl: string;            // 已由 GAS 轉換為 lh3 網址
   totalStock: number | null;   // 總進貨量；null = 不追蹤庫存

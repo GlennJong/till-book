@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { buildRules, priceCart, type CartItem } from './pricing';
 import type { BundleRecord, Product, PromotionRecord } from './types';
 
-const product = (id: string, price: number, category = '未分類'): Product => ({
+const product = (id: string, price: number, ...categories: string[]): Product => ({
   id,
   name: id,
   price,
-  category,
+  categories: categories.length ? categories : ['未分類'],
   code: '',
   imageUrl: '',
   totalStock: null,
@@ -100,6 +100,13 @@ describe('bundles', () => {
   it('skips manually priced items', () => {
     const items = [{ productId: 'A', quantity: 1, manualUnitPrice: 150 }, { productId: 'B', quantity: 1 }];
     expect(price(items, [bundle('A+B', 200, ['A', 'B'])]).total).toBe(270);
+  });
+
+  it('matches category slots against any of a product’s categories', () => {
+    const products = [product('殺守', 150, '貞貞俱樂部', '雷射貼紙'), product('遊俠', 150, '雷射貼紙'), product('砲手', 150, '雷射貼紙', '傭兵'), product('海報', 180, '貞貞俱樂部')];
+    const rules = buildRules(products, [{ name: '3 張雷射貼紙', bundlePrice: 420, pickCount: 3, items: ['【分類】雷射貼紙'] }], []);
+    const res = priceCart(['殺守', '遊俠', '砲手', '海報'].map(id => ({ productId: id, quantity: 1 })), rules);
+    expect(res.total).toBe(420 + 180);
   });
 
   it('allows category slots inside fixed bundles', () => {

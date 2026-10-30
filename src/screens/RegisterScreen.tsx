@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useReducer, useState } from 'react';
-import { Camera, Gift, Hash, Minus, Plus, ShoppingCart, Trash2 } from 'lucide-react';
+import { Camera, Gift, Hash, Minus, Plus, ShoppingCart, Trash2, Undo2 } from 'lucide-react';
 import Modal from '../components/Modal';
 import NumericKeypad from '../components/NumericKeypad';
 import ProductImage from '../components/ProductImage';
-import { cartReducer } from '../lib/cart';
+import { cartStateReducer, EMPTY_CART, type CartAction, type CartState } from '../lib/cart';
 import { beep } from '../lib/feedback';
 import { priceCart } from '../lib/pricing';
 import { useBarcodeScanner } from '../lib/scanner';
@@ -15,12 +15,26 @@ import EventBar from './EventBar';
 
 const FLASH_MS = 400;
 
+// 復原按鈕上顯示的「上一步」
+const describeAction = (action: CartAction, products: { id: string; name: string }[]) => {
+  if (action.type === 'clear') return '清空購物車';
+  const name = products.find(p => p.id === action.productId)?.name ?? '';
+  return { add: '加入', decrement: '減少', remove: '移除', setManualPrice: '改價' }[action.type] + ' ' + name;
+};
+
 const ALL = '全部';
 
 export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOut: (orderNo: string) => void; onNotice: (message: string) => void }) {
   const { products, rules, stock, onSite, categories } = useCatalog();
-  const [cart, dispatch] = useReducer(cartReducer, []);
-  const [category, setCategory] = useState(ALL);
+  const [cartState, dispatch] = useReducer(cartStateReducer, EMPTY_CART);
+  const cart = cartState.items;
+  const lastAction = cartState.history.at(-1)?.action;
+  const undoLabel = lastAction ? describeAction(lastAction, products) : null;
+  const undo = () => dispatch({ type: 'undo' });
+  // 選多個分類時取交集；空陣列代表「全部」
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const toggleCategory = (c: string) =>
+    setSelectedCategories(prev => (prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c]));
   const [editingPrice, setEditingPrice] = useState<string | null>(null);
   const [checkingOut, setCheckingOut] = useState(false);
   const [cartOpen, setCartOpen] = useState(false);
@@ -68,12 +82,14 @@ export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOu
   };
   useBarcodeScanner(addByCode);
 
-  const visible = category === ALL ? products : products.filter(p => p.category === category);
+  const visible = products.filter(p => selectedCategories.every(c => p.categories.includes(c)));
   const itemCount = cart.reduce((sum, i) => sum + i.quantity, 0);
 
   const cartPanel = (
     <CartPanel
       cart={cart}
+      undoLabel={undoLabel}
+      onUndo={undo}
       pricing={pricing}
       products={products}
       onIncrement={id => addProduct(id)}
@@ -99,11 +115,19 @@ export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOu
           </div>
         </div>
         <nav aria-label="商品分類" className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-3">
-          {[ALL, ...categories].map(c => (
+          <button
+            onClick={() => setSelectedCategories([])}
+            aria-pressed={selectedCategories.length === 0}
+            className={`shrink-0 rounded-full px-4 py-2 text-sm font-medium ${selectedCategories.length === 0 ? 'bg-stone-900 text-white' : 'bg-white text-stone-700'}`}
+          >
+            {ALL}
+          </button>
+          {categories.map(c => (
             <button
               key={c}
-              onClick={() => setCategory(c)}
-              className={`shrink-0 rounded-full px-4 py-2 text-sm font-medium ${c === category ? 'bg-stone-900 text-white' : 'bg-white text-stone-700'}`}
+              onClick={() => toggleCategory(c)}
+              aria-pressed={selectedCategories.includes(c)}
+              className={`shrink-0 rounded-full px-4 py-2 text-sm font-medium ${selectedCategories.includes(c) ? 'bg-stone-900 text-white' : 'bg-white text-stone-700'}`}
             >
               {c}
             </button>
@@ -155,11 +179,16 @@ export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOu
       <aside className="hidden w-80 shrink-0 lg:block">{cartPanel}</aside>
 
       {/* 手機：底部購物車列，點開為抽屜 */}
-      <div className="fixed inset-x-0 bottom-16 z-30 px-4 pb-2 lg:hidden">
+      <div className="fixed inset-x-0 bottom-16 z-30 flex gap-2 px-4 pb-2 lg:hidden">
+        {undoLabel && (
+          <button onClick={undo} aria-label={`復原（${undoLabel}）`} className="flex shrink-0 items-center gap-1 rounded-2xl bg-white px-4 text-sm font-medium shadow-lg">
+            <Undo2 className="size-4" /> 復原
+          </button>
+        )}
         <button
           onClick={() => setCartOpen(true)}
           disabled={itemCount === 0}
-          className="flex w-full items-center justify-between rounded-2xl bg-stone-900 px-5 py-4 text-white shadow-lg disabled:bg-stone-400"
+          className="flex min-w-0 flex-1 items-center justify-between rounded-2xl bg-stone-900 px-5 py-4 text-white shadow-lg disabled:bg-stone-400"
         >
           <span className="flex items-center gap-2">
             <ShoppingCart className="size-5" /> {itemCount} 件
@@ -203,7 +232,7 @@ export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOu
           rules={rules}
           onClose={() => setCheckingOut(false)}
           onDone={orderNo => {
-            dispatch({ type: 'clear' });
+            dispatch({ type: 'reset' });
             setCheckingOut(false);
             setCartOpen(false);
             onCheckedOut(orderNo);
@@ -215,7 +244,9 @@ export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOu
 }
 
 function CartPanel(props: {
-  cart: ReturnType<typeof cartReducer>;
+  cart: CartState['items'];
+  undoLabel: string | null;
+  onUndo: () => void;
   pricing: ReturnType<typeof priceCart>;
   products: ReturnType<typeof useCatalog>['products'];
   onIncrement: (id: string) => void;
@@ -227,12 +258,24 @@ function CartPanel(props: {
   const { cart, pricing, products } = props;
   const extras = pricing.lines.filter(l => l.lineType !== '商品');
 
+  const undoButton = props.undoLabel && (
+    <button onClick={props.onUndo} className="inline-flex items-center gap-1 self-start rounded-lg bg-stone-100 px-3 py-1.5 text-sm font-medium">
+      <Undo2 className="size-4" /> 復原（{props.undoLabel}）
+    </button>
+  );
+
   if (cart.length === 0) {
-    return <div className="rounded-2xl bg-white p-6 text-center text-stone-500">點商品加入購物車</div>;
+    return (
+      <div className="flex flex-col items-center gap-3 rounded-2xl bg-white p-6 text-center text-stone-500">
+        點商品加入購物車
+        {undoButton}
+      </div>
+    );
   }
 
   return (
     <div className="flex flex-col gap-3 rounded-2xl bg-white p-4 lg:sticky lg:top-4">
+      {undoButton}
       <ul className="divide-y divide-stone-100">
         {cart.map(item => {
           const product = products.find(p => p.id === item.productId);

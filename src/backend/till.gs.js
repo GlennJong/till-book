@@ -94,7 +94,7 @@ function tillBootstrap() {
       id: String(r.id),
       name: name,
       price: price,
-      category: tillText(r['分類']) || '未分類',
+      categories: tillCategories(r['分類']),
       code: code,
       imageUrl: toLh3Url(r['圖片連結']),
       // 「總進貨量」舊版叫「備貨數量」
@@ -445,6 +445,16 @@ function tillNumberedValues(record, prefix) {
     .sort(function(a, b) { return Number(a.replace(/\D/g, '')) - Number(b.replace(/\D/g, '')); })
     .map(function(key) { return tillText(record[key]); })
     .filter(function(value) { return value !== ''; });
+}
+
+// 分類可以填多個，以半形逗號分隔；留白歸到「未分類」
+function tillCategories(value) {
+  var categories = [];
+  tillText(value).split(',').forEach(function(part) {
+    var name = part.trim();
+    if (name && categories.indexOf(name) === -1) categories.push(name);
+  });
+  return categories.length > 0 ? categories : ['未分類'];
 }
 
 function tillText(value) {

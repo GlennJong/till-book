@@ -4,12 +4,15 @@ import scriptCode from './till.gs.js?raw';
 export const SHEET_PREFIX = 'till-';
 
 // 修改 till.gs.js 後要調高版本號，App 會提示既有的表格升級腳本
-export const SCRIPT_VERSION = '1.6.0';
+export const SCRIPT_VERSION = '1.7.0';
 
 // 版本號注入腳本，bootstrap 會回傳，App 據此提示升級
 export const TILL_SCRIPT = { code: `var TILL_SCRIPT_VERSION = '${SCRIPT_VERSION}';\n${scriptCode}`, version: SCRIPT_VERSION };
 
 const BUNDLE_ITEM_COUNT = 8;
+
+// 把「分類」欄每一格以逗號拆開、去空白，攤平成一欄（LET 的 tags 變數）
+const CATEGORY_OPTIONS = 'tags, FLATTEN(ARRAYFORMULA(IFERROR(TRIM(SPLIT({{商品.分類}}, ",")), "")))';
 const GIFT_ITEM_COUNT = 4;
 
 export const TILL_TABS: TabDefinition[] = [
@@ -18,7 +21,7 @@ export const TILL_TABS: TabDefinition[] = [
     columns: [
       { name: '品名', type: 'string', note: '必填，不可重複' },
       { name: '售價', type: 'number', note: '必填' },
-      { name: '分類', type: 'string', note: '留白會歸到「未分類」' },
+      { name: '分類', type: 'string', note: '可以填多個，用半形逗號分隔，例如「貞貞俱樂部,貼紙」；創作者、品類、系列都可以當分類。留白會歸到「未分類」' },
       { name: '商品代碼', type: 'string', note: '留白會自動編號（1001 起）。印在條碼標籤上、掃碼時用來找商品；可以自己改，但不可重複，改了要重印標籤' },
       { name: '圖片連結', type: 'string', note: '貼上 Google Drive 分享連結（需設為「知道連結的任何人」可檢視）；留白顯示品名首字' },
       {
@@ -114,9 +117,8 @@ export const TILL_TABS: TabDefinition[] = [
       {
         name: '選項',
         type: 'string',
-        // 組合價「品項」下拉選單：所有品名 + 「【分類】xxx」，去重排序
-        arrayFormula:
-          'LET(items, { {{商品.品名}}; ARRAYFORMULA(IF({{商品.分類}}="", "", "【分類】"&{{商品.分類}})) }, IFERROR(SORT(UNIQUE(FILTER(items, items<>""))), ""))'
+        // 組合價「品項」下拉選單：所有品名 + 每個分類各一個「【分類】xxx」（分類以逗號拆開），去重排序
+        arrayFormula: `LET(${CATEGORY_OPTIONS}, items, { {{商品.品名}}; IF(tags="", "", "【分類】"&tags) }, IFERROR(SORT(UNIQUE(FILTER(items, items<>""))), ""))`
       },
       {
         name: '場次選項',

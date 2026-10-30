@@ -16,7 +16,7 @@ export function useCatalog() {
   const rules = useMemo(() => buildRules(products, bundles, promotions), [products, bundles, promotions]);
   const stock = useMemo(() => availableStock(products, unsynced), [products, unsynced]);
   const onSite = useMemo(() => availableOnSite(products, unsynced), [products, unsynced]);
-  const categories = useMemo(() => [...new Set(products.map(p => p.category))], [products]);
+  const categories = useMemo(() => [...new Set(products.flatMap(p => p.categories))], [products]);
 
   return {
     products,

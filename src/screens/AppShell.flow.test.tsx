@@ -225,6 +225,35 @@ describe('register flow', () => {
     expect(within(price).getByDisplayValue('180')).toBeTruthy();
   });
 
+  it('categories filter by intersection, 全部 resets, and mis-taps can be undone', async () => {
+    productRow('本子 A')[PRODUCT_HEADERS.indexOf('分類')] = '創作者甲,本子';
+    productRow('本子 B')[PRODUCT_HEADERS.indexOf('分類')] = '創作者乙,本子';
+    productRow('貼紙')[PRODUCT_HEADERS.indexOf('分類')] = '創作者甲,贈品';
+    render(<AppShell connection={connection} onDisconnect={() => {}} />);
+    const categoryNav = () => within(screen.getByRole('navigation', { name: '商品分類' }));
+    // 購物車還是空的，畫面上的品名都來自商品網格
+    const visibleNames = () => screen.queryAllByText(/^(本子 A|本子 B|貼紙)$/).map(el => el.textContent);
+
+    fireEvent.click(await categoryNav().findByText('創作者甲'));
+    await waitFor(() => expect(visibleNames()).toEqual(['本子 A', '貼紙']));
+    fireEvent.click(categoryNav().getByText('本子'));
+    await waitFor(() => expect(visibleNames()).toEqual(['本子 A']));
+    fireEvent.click(categoryNav().getByText('全部'));
+    await waitFor(() => expect(visibleNames()).toEqual(['本子 A', '本子 B', '貼紙']));
+
+    // 點錯兩下 → 復原一次
+    fireEvent.click(await productButton('本子 A'));
+    fireEvent.click(await productButton('本子 A'));
+    expect(within(cartPanel()).getByText('2')).toBeTruthy();
+    fireEvent.click(within(cartPanel()).getByRole('button', { name: /復原（加入 本子 A）/ }));
+    await waitFor(() => expect(within(cartPanel()).getByText('1')).toBeTruthy());
+
+    // 誤按清空 → 復原
+    fireEvent.click(within(cartPanel()).getByRole('button', { name: '清空購物車' }));
+    fireEvent.click(screen.getAllByRole('button', { name: /復原（清空購物車）/ })[0]);
+    await waitFor(() => expect(within(cartPanel()).getByText('本子 A')).toBeTruthy());
+  });
+
   it('settings: add a payment method and use it at checkout', async () => {
     render(<AppShell connection={connection} onDisconnect={() => {}} />);
     tab('設定');

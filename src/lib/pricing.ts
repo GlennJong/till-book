@@ -51,7 +51,7 @@ export function buildRules(products: Product[], bundles: BundleRecord[], promoti
     if (byName.has(item)) return new Set([byName.get(item)!.id]);
     if (item.startsWith(CATEGORY_PREFIX)) {
       const category = item.slice(CATEGORY_PREFIX.length);
-      const ids = products.filter(p => p.category === category).map(p => p.id);
+      const ids = products.filter(p => p.categories.includes(category)).map(p => p.id);
       return ids.length > 0 ? new Set(ids) : null;
     }
     return null;

@@ -159,12 +159,12 @@ describe('bootstrap', () => {
   it('maps Chinese headers to English keys and filters disabled rows', () => {
     const res = ctx.VIBE_ROUTES.GET.bootstrap({ parameter: {} });
     expect(res.products).toEqual([
-      { id: 'p-a', name: '本子 A', price: 200, category: '本子', code: '1001', imageUrl: '', totalStock: 10, currentStock: 10, onSite: null },
+      { id: 'p-a', name: '本子 A', price: 200, categories: ['本子'], code: '1001', imageUrl: '', totalStock: 10, currentStock: 10, onSite: null },
       {
         id: 'p-b',
         name: '吊飾',
         price: 120,
-        category: '未分類',
+        categories: ['未分類'],
         code: '1002',
         imageUrl: 'https://lh3.googleusercontent.com/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345',
         totalStock: null,
@@ -213,6 +213,12 @@ describe('bootstrap', () => {
     const res = ctx.VIBE_ROUTES.GET.bootstrap({ parameter: {} });
     expect(res.products.map((p: { code: string }) => p.code)).toEqual(['1001', '']);
     expect(res.warnings).toEqual(['商品代碼「1001」重複（本子 A、吊飾），掃碼時只會對應到「本子 A」']);
+  });
+
+  it('splits comma-separated categories, trimming and dropping duplicates', () => {
+    sheets['商品'].rows[1][PRODUCT_HEADERS.indexOf('分類')] = ' 貞貞俱樂部, 貼紙 ,,貼紙';
+    const res = ctx.VIBE_ROUTES.GET.bootstrap({ parameter: {} });
+    expect(res.products[0].categories).toEqual(['貞貞俱樂部', '貼紙']);
   });
 
   it('lists recent events newest first without duplicates', () => {
