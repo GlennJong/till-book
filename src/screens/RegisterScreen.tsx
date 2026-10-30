@@ -1,0 +1,276 @@
+import { useMemo, useReducer, useState } from 'react';
+import { Gift, Minus, Plus, ShoppingCart, Trash2 } from 'lucide-react';
+import Modal from '../components/Modal';
+import ProductImage from '../components/ProductImage';
+import { cartReducer } from '../lib/cart';
+import { priceCart } from '../lib/pricing';
+import { useCatalog } from '../lib/useCatalog';
+import { useWakeLock } from '../lib/useWakeLock';
+import CheckoutDialog from './CheckoutDialog';
+
+const ALL = '全部';
+
+export default function RegisterScreen({ onCheckedOut }: { onCheckedOut: (orderNo: string) => void }) {
+  const { products, rules, stock, categories } = useCatalog();
+  const [cart, dispatch] = useReducer(cartReducer, []);
+  const [category, setCategory] = useState(ALL);
+  const [editingPrice, setEditingPrice] = useState<string | null>(null);
+  const [checkingOut, setCheckingOut] = useState(false);
+  const [cartOpen, setCartOpen] = useState(false);
+  useWakeLock(true);
+
+  const pricing = useMemo(() => priceCart(cart, rules), [cart, rules]);
+  const inCart = (id: string) => cart.find(i => i.productId === id)?.quantity ?? 0;
+  const remaining = (id: string) => {
+    const available = stock.get(id);
+    return available === null || available === undefined ? null : available - inCart(id);
+  };
+
+  const addProduct = (id: string) => {
+    const left = remaining(id);
+    if (left !== null && left <= 0) {
+      const name = products.find(p => p.id === id)?.name;
+      if (!window.confirm(`「${name}」庫存不足，仍要賣出嗎？（例如預購、展後寄送）`)) return;
+    }
+    dispatch({ type: 'add', productId: id });
+  };
+
+  const visible = category === ALL ? products : products.filter(p => p.category === category);
+  const itemCount = cart.reduce((sum, i) => sum + i.quantity, 0);
+
+  const cartPanel = (
+    <CartPanel
+      cart={cart}
+      pricing={pricing}
+      products={products}
+      onIncrement={id => addProduct(id)}
+      onDecrement={id => dispatch({ type: 'decrement', productId: id })}
+      onEditPrice={setEditingPrice}
+      onClear={() => dispatch({ type: 'clear' })}
+      onCheckout={() => setCheckingOut(true)}
+    />
+  );
+
+  return (
+    <div className="flex min-h-0 flex-1 gap-4">
+      <div className="flex min-w-0 flex-1 flex-col">
+        <nav aria-label="商品分類" className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-3">
+          {[ALL, ...categories].map(c => (
+            <button
+              key={c}
+              onClick={() => setCategory(c)}
+              className={`shrink-0 rounded-full px-4 py-2 text-sm font-medium ${c === category ? 'bg-stone-900 text-white' : 'bg-white text-stone-700'}`}
+            >
+              {c}
+            </button>
+          ))}
+        </nav>
+
+        {products.length === 0 ? (
+          <p className="mt-10 text-center text-stone-500">還沒有商品。請在試算表的「商品」分頁新增後按同步。</p>
+        ) : (
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(7.5rem,1fr))] gap-2 pb-28 lg:pb-4">
+            {visible.map(p => {
+              const left = remaining(p.id);
+              const soldOut = left !== null && left <= 0;
+              const count = inCart(p.id);
+              return (
+                <button
+                  key={p.id}
+                  onClick={() => addProduct(p.id)}
+                  className={`relative flex min-h-16 flex-col overflow-hidden rounded-xl border bg-white text-left active:scale-[0.98] ${count > 0 ? 'border-stone-900' : 'border-stone-200'}`}
+                >
+                  <ProductImage name={p.name} imageUrl={p.imageUrl} className={`aspect-square w-full ${soldOut ? 'opacity-40 grayscale' : ''}`} />
+                  <div className="p-2">
+                    <p className="line-clamp-2 text-sm leading-tight font-medium">{p.name}</p>
+                    <p className="mt-1 flex items-baseline justify-between">
+                      <span className="font-bold">${p.price}</span>
+                      {left !== null && <span className={`text-xs ${soldOut ? 'text-red-600' : 'text-stone-500'}`}>剩 {left}</span>}
+                    </p>
+                  </div>
+                  {soldOut && (
+                    <span className="absolute top-2 left-2 rounded bg-red-600 px-1.5 py-0.5 text-xs font-bold text-white">SOLD OUT</span>
+                  )}
+                  {count > 0 && (
+                    <span className="absolute top-2 right-2 flex size-7 items-center justify-center rounded-full bg-stone-900 text-sm font-bold text-white">
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* 寬螢幕：右側固定購物車 */}
+      <aside className="hidden w-80 shrink-0 lg:block">{cartPanel}</aside>
+
+      {/* 手機：底部購物車列，點開為抽屜 */}
+      <div className="fixed inset-x-0 bottom-16 z-30 px-4 pb-2 lg:hidden">
+        <button
+          onClick={() => setCartOpen(true)}
+          disabled={itemCount === 0}
+          className="flex w-full items-center justify-between rounded-2xl bg-stone-900 px-5 py-4 text-white shadow-lg disabled:bg-stone-400"
+        >
+          <span className="flex items-center gap-2">
+            <ShoppingCart className="size-5" /> {itemCount} 件
+          </span>
+          <span className="text-xl font-bold">${pricing.total}</span>
+        </button>
+      </div>
+      {cartOpen && itemCount > 0 && (
+        <Modal title="購物車" onClose={() => setCartOpen(false)}>
+          {cartPanel}
+        </Modal>
+      )}
+
+      {editingPrice && (
+        <ManualPriceDialog
+          product={products.find(p => p.id === editingPrice)!}
+          current={cart.find(i => i.productId === editingPrice)?.manualUnitPrice}
+          onSave={price => {
+            dispatch({ type: 'setManualPrice', productId: editingPrice, price });
+            setEditingPrice(null);
+          }}
+          onClose={() => setEditingPrice(null)}
+        />
+      )}
+
+      {checkingOut && (
+        <CheckoutDialog
+          cart={cart}
+          rules={rules}
+          onClose={() => setCheckingOut(false)}
+          onDone={orderNo => {
+            dispatch({ type: 'clear' });
+            setCheckingOut(false);
+            setCartOpen(false);
+            onCheckedOut(orderNo);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function CartPanel(props: {
+  cart: ReturnType<typeof cartReducer>;
+  pricing: ReturnType<typeof priceCart>;
+  products: ReturnType<typeof useCatalog>['products'];
+  onIncrement: (id: string) => void;
+  onDecrement: (id: string) => void;
+  onEditPrice: (id: string) => void;
+  onClear: () => void;
+  onCheckout: () => void;
+}) {
+  const { cart, pricing, products } = props;
+  const extras = pricing.lines.filter(l => l.lineType !== '商品');
+
+  if (cart.length === 0) {
+    return <div className="rounded-2xl bg-white p-6 text-center text-stone-500">點商品加入購物車</div>;
+  }
+
+  return (
+    <div className="flex flex-col gap-3 rounded-2xl bg-white p-4 lg:sticky lg:top-4">
+      <ul className="divide-y divide-stone-100">
+        {cart.map(item => {
+          const product = products.find(p => p.id === item.productId);
+          if (!product) return null;
+          const unitPrice = item.manualUnitPrice ?? product.price;
+          return (
+            <li key={item.productId} className="flex items-center gap-2 py-2">
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-medium">{product.name}</p>
+                <button onClick={() => props.onEditPrice(item.productId)} aria-label={`改價：${product.name}`} className="text-sm text-stone-500 underline decoration-dotted">
+                  ${unitPrice}
+                  {item.manualUnitPrice !== undefined && <span className="ml-1 text-amber-700">（改價，原 ${product.price}）</span>}
+                </button>
+              </div>
+              <button onClick={() => props.onDecrement(item.productId)} className="flex size-10 items-center justify-center rounded-lg bg-stone-100" aria-label="減少">
+                <Minus className="size-4" />
+              </button>
+              <span className="w-6 text-center font-bold">{item.quantity}</span>
+              <button onClick={() => props.onIncrement(item.productId)} className="flex size-10 items-center justify-center rounded-lg bg-stone-100" aria-label="增加">
+                <Plus className="size-4" />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+
+      {extras.length > 0 && (
+        <ul className="space-y-1 border-t border-stone-100 pt-2 text-sm">
+          {extras.map((l, i) => (
+            <li key={i} className={`flex justify-between ${l.lineType === '贈品' ? 'text-emerald-700' : 'text-rose-700'}`}>
+              <span className="flex items-center gap-1">
+                {l.lineType === '贈品' && <Gift className="size-4" />}
+                {l.lineType === '贈品' ? `${l.itemName} ×${l.quantity}（${l.description}）` : l.description}
+              </span>
+              <span>{l.lineType === '贈品' ? '贈' : `−$${-l.subtotal}`}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {pricing.nextPromotion && (
+        <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          再買 ${pricing.nextPromotion.remaining} 可享「{pricing.nextPromotion.name}」
+        </p>
+      )}
+
+      <div className="flex items-baseline justify-between border-t border-stone-100 pt-2">
+        <span className="text-stone-600">合計</span>
+        <span className="text-3xl font-bold">${pricing.total}</span>
+      </div>
+
+      <div className="flex gap-2">
+        <button onClick={props.onClear} className="flex size-14 items-center justify-center rounded-xl bg-stone-100" aria-label="清空購物車">
+          <Trash2 className="size-5" />
+        </button>
+        <button onClick={props.onCheckout} className="h-14 flex-1 rounded-xl bg-stone-900 text-lg font-bold text-white">
+          結帳
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ManualPriceDialog(props: {
+  product: { name: string; price: number };
+  current?: number;
+  onSave: (price?: number) => void;
+  onClose: () => void;
+}) {
+  const [value, setValue] = useState(String(props.current ?? props.product.price));
+  const parsed = Number(value);
+  const valid = value.trim() !== '' && Number.isFinite(parsed) && parsed >= 0;
+
+  return (
+    <Modal title={`改價：${props.product.name}`} onClose={props.onClose}>
+      <p className="text-sm text-stone-500">原價 ${props.product.price}。改價的品項不會參與組合價。</p>
+      <input
+        type="number"
+        inputMode="numeric"
+        autoFocus
+        value={value}
+        onChange={e => setValue(e.target.value)}
+        className="mt-3 w-full rounded-xl border border-stone-300 px-4 py-3 text-2xl font-bold"
+      />
+      <div className="mt-4 flex gap-2">
+        {props.current !== undefined && (
+          <button onClick={() => props.onSave(undefined)} className="h-12 flex-1 rounded-xl bg-stone-100 font-medium">
+            恢復原價
+          </button>
+        )}
+        <button
+          onClick={() => props.onSave(parsed === props.product.price ? undefined : parsed)}
+          disabled={!valid}
+          className="h-12 flex-1 rounded-xl bg-stone-900 font-bold text-white disabled:opacity-40"
+        >
+          確定
+        </button>
+      </div>
+    </Modal>
+  );
+}

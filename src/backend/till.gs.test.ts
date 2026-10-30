@@ -1,0 +1,296 @@
+import { readFileSync } from 'node:fs';
+import { createContext, runInContext } from 'node:vm';
+import { beforeEach, describe, expect, it } from 'vitest';
+
+// 以記憶體中的假 SpreadsheetApp 執行 till.gs.js，驗證路由行為
+
+type Cell = string | number | boolean | Date | null;
+
+class MockSheet {
+  rows: Cell[][];
+  maxRows: number;
+  constructor(public name: string, rows: Cell[][], maxRows = 1000) {
+    this.rows = rows;
+    this.maxRows = maxRows;
+  }
+  getMaxRows() {
+    return this.maxRows;
+  }
+  insertRowsAfter(_after: number, howMany: number) {
+    this.maxRows += howMany;
+  }
+  getLastColumn() {
+    return (this.rows[0] || []).length;
+  }
+  getLastRow() {
+    for (let i = this.rows.length - 1; i >= 0; i--) {
+      if (this.rows[i].some(v => v !== '' && v !== null)) return i + 1;
+    }
+    return 0;
+  }
+  getDataRange() {
+    return this.getRange(1, 1, this.getLastRow(), this.getLastColumn());
+  }
+  getRange(row: number, col: number, numRows = 1, numCols = 1) {
+    const read = () =>
+      Array.from({ length: numRows }, (_, r) =>
+        Array.from({ length: numCols }, (_, c) => this.rows[row - 1 + r]?.[col - 1 + c] ?? '')
+      );
+    const write = (values: Cell[][]) => {
+      if (row + values.length - 1 > this.maxRows) throw new Error('The coordinates of the range are outside the dimensions of the sheet.');
+      values.forEach((line, r) => {
+        while (this.rows.length < row + r) this.rows.push(new Array(this.getLastColumn()).fill(''));
+        line.forEach((v, c) => {
+          this.rows[row - 1 + r][col - 1 + c] = v;
+        });
+      });
+    };
+    return {
+      getValues: read,
+      getValue: () => read()[0][0],
+      setValues: write,
+      setValue: (v: Cell) => write([[v]]),
+      createTextFinder: (text: string) => ({
+        matchEntireCell: () => ({
+          findNext: () => (read().some(line => line.some(v => String(v) === text)) ? {} : null)
+        })
+      })
+    };
+  }
+}
+
+const PRODUCT_HEADERS = ['is_enabled', '品名', '售價', '分類', '圖片連結', '備貨數量', '目前庫存', 'id', 'created_at', 'updated_at'];
+const BUNDLE_HEADERS = ['is_enabled', '組合名稱', '組合價', '任選件數', '品項 1', '品項 2', '品項 10', 'id', 'created_at', 'updated_at'];
+const PROMO_HEADERS = ['is_enabled', '活動名稱', '滿額門檻', '折抵金額', '贈品 1', '贈品 2', 'id', 'created_at', 'updated_at'];
+const LOG_HEADERS = ['時間', '單號', '類型', '品名', '數量', '定價', '成交單價', '小計', '付款方式', '說明', '備註', '沖銷單號', '商品編號'];
+
+let sheets: Record<string, MockSheet>;
+let ctx: Record<string, any>;
+
+// 模擬「目前庫存」ARRAYFORMULA：flush 時依銷售紀錄重算
+const recalcStock = () => {
+  const products = sheets['商品'];
+  const log = sheets['銷售紀錄'];
+  const p = (h: string) => PRODUCT_HEADERS.indexOf(h);
+  const l = (h: string) => LOG_HEADERS.indexOf(h);
+  products.rows.slice(1).forEach(row => {
+    const id = row[p('id')];
+    const initial = row[p('備貨數量')];
+    if (!id || initial === '') {
+      row[p('目前庫存')] = '';
+      return;
+    }
+    const sold = log.rows
+      .slice(1)
+      .filter(r => r[l('商品編號')] === id)
+      .reduce((sum, r) => sum + Number(r[l('數量')]), 0);
+    row[p('目前庫存')] = Number(initial) - sold;
+  });
+};
+
+const load = () => {
+  let uuid = 0;
+  ctx = {
+    SpreadsheetApp: {
+      getActiveSpreadsheet: () => ({ getSheetByName: (n: string) => sheets[n] || null }),
+      flush: recalcStock
+    },
+    LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) },
+    Utilities: {
+      getUuid: () => `uuid-${++uuid}`,
+      // 測試以 UTC+8 模擬 Asia/Taipei
+      formatDate: (d: Date) => new Date(d.getTime() + 8 * 3600 * 1000).toISOString().slice(0, 10)
+    },
+    Session: { getScriptTimeZone: () => 'Asia/Taipei' }
+  };
+  createContext(ctx);
+  runInContext(readFileSync(new URL('./till.gs.js', import.meta.url), 'utf8'), ctx);
+  recalcStock();
+};
+
+const product = (fields: Record<string, Cell>) => PRODUCT_HEADERS.map(h => (h in fields ? fields[h] : ''));
+const bundle = (fields: Record<string, Cell>) => BUNDLE_HEADERS.map(h => (h in fields ? fields[h] : ''));
+const promo = (fields: Record<string, Cell>) => PROMO_HEADERS.map(h => (h in fields ? fields[h] : ''));
+
+const order = (orderNo: string, lines: object[], extra: object = {}) => ({
+  orderNo,
+  createdAt: '2026-10-29T04:00:00.000Z', // 台北時間 2026-10-29 12:00
+  paymentMethod: '現金',
+  note: '',
+  lines,
+  ...extra
+});
+const line = (productId: string, quantity: number, unitPrice: number, extra: object = {}) => ({
+  lineType: '商品',
+  productId,
+  itemName: productId,
+  quantity,
+  listPrice: unitPrice,
+  unitPrice,
+  subtotal: quantity * unitPrice,
+  description: '',
+  ...extra
+});
+const post = (orders: object[]) => ctx.VIBE_ROUTES.POST.orders({ postData: { contents: JSON.stringify({ orders }) } });
+
+beforeEach(() => {
+  sheets = {
+    商品: new MockSheet('商品', [
+      PRODUCT_HEADERS.slice(),
+      product({ is_enabled: true, 品名: '本子 A', 售價: 200, 分類: '本子', 備貨數量: 10, id: 'p-a' }),
+      product({ is_enabled: true, 品名: '吊飾', 售價: 120, id: 'p-b', 圖片連結: 'https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/view?usp=sharing' }),
+      product({ is_enabled: false, 品名: '下架品', 售價: 50, id: 'p-off' })
+    ]),
+    組合價: new MockSheet('組合價', [
+      BUNDLE_HEADERS.slice(),
+      bundle({ is_enabled: true, 組合名稱: '本子任選 2', 組合價: 300, 任選件數: 2, '品項 1': '【分類】本子', '品項 10': '吊飾', id: 'b-1' })
+    ]),
+    滿額活動: new MockSheet('滿額活動', [
+      PROMO_HEADERS.slice(),
+      promo({ is_enabled: true, 活動名稱: '滿 500 送貼紙', 滿額門檻: 500, '贈品 1': '吊飾', '贈品 2': '吊飾', id: 'm-1' })
+    ]),
+    銷售紀錄: new MockSheet('銷售紀錄', [LOG_HEADERS.slice()])
+  };
+  load();
+});
+
+describe('bootstrap', () => {
+  it('maps Chinese headers to English keys and filters disabled rows', () => {
+    const res = ctx.VIBE_ROUTES.GET.bootstrap({ parameter: {} });
+    expect(res.products).toEqual([
+      { id: 'p-a', name: '本子 A', price: 200, category: '本子', imageUrl: '', initialStock: 10, currentStock: 10 },
+      {
+        id: 'p-b',
+        name: '吊飾',
+        price: 120,
+        category: '未分類',
+        imageUrl: 'https://lh3.googleusercontent.com/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345',
+        initialStock: null,
+        currentStock: null
+      }
+    ]);
+    expect(res.warnings).toEqual([]);
+  });
+
+  it('collects bundle items in numeric order, including user-added columns', () => {
+    const res = ctx.VIBE_ROUTES.GET.bootstrap({ parameter: {} });
+    expect(res.bundles).toEqual([{ name: '本子任選 2', bundlePrice: 300, pickCount: 2, items: ['【分類】本子', '吊飾'] }]);
+  });
+
+  it('applies promotion defaults', () => {
+    const res = ctx.VIBE_ROUTES.GET.bootstrap({ parameter: {} });
+    expect(res.promotions).toEqual([
+      { name: '滿 500 送貼紙', threshold: 500, discountAmount: 0, gifts: ['吊飾', '吊飾'] }
+    ]);
+  });
+
+  it('still reads promotions from sheets created with older columns', () => {
+    sheets['滿額活動'] = new MockSheet('滿額活動', [
+      ['is_enabled', '活動名稱', '滿額門檻', '折抵金額', '贈品', '贈品數量', '只送最好的', 'id'],
+      [true, '滿 500 送兩張貼紙', 500, '', '貼紙', 2, true, 'old-1']
+    ]);
+    const res = ctx.VIBE_ROUTES.GET.bootstrap({ parameter: {} });
+    expect(res.promotions).toEqual([{ name: '滿 500 送兩張貼紙', threshold: 500, discountAmount: 0, gifts: ['貼紙', '貼紙'] }]);
+  });
+
+  it('does not treat empty rows with unchecked checkboxes as data', () => {
+    // 使用者自己加的勾選框欄，空白列的值是 FALSE
+    sheets['滿額活動'] = new MockSheet('滿額活動', [
+      ['is_enabled', '活動名稱', '滿額門檻', '自訂勾選', 'id', 'created_at', 'updated_at'],
+      [true, '滿 100 折 10', 100, false, 'm-1', 't', 't'],
+      [false, '', '', false, '', '', ''],
+      [false, '', '', false, '', '', '']
+    ]);
+    ctx.VIBE_ROUTES.GET.bootstrap({ parameter: {} });
+    expect(sheets['滿額活動'].rows.slice(2).map(r => r[4])).toEqual(['', '']);
+  });
+
+  it('backfills system columns for rows the onEdit trigger missed', () => {
+    sheets['商品'].rows.push(product({ is_enabled: false, 品名: '新商品', 售價: 80, 備貨數量: 5 }));
+    const res = ctx.VIBE_ROUTES.GET.bootstrap({ parameter: {} });
+    const added = res.products.find((p: { name: string }) => p.name === '新商品');
+    expect(added).toMatchObject({ id: 'uuid-1', currentStock: 5 });
+    const row = sheets['商品'].rows[4];
+    expect(row[PRODUCT_HEADERS.indexOf('is_enabled')]).toBe(true);
+    expect(row[PRODUCT_HEADERS.indexOf('created_at')]).not.toBe('');
+  });
+
+  it('warns about incomplete or duplicate rows instead of failing', () => {
+    sheets['商品'].rows.push(product({ is_enabled: true, 品名: '沒價格', id: 'p-x' }));
+    sheets['商品'].rows.push(product({ is_enabled: true, 品名: '本子 A', 售價: 1, id: 'p-dup' }));
+    sheets['組合價'].rows.push(bundle({ is_enabled: true, 組合名稱: '空組合', 組合價: 100, id: 'b-2' }));
+    sheets['滿額活動'].rows.push(promo({ is_enabled: true, 活動名稱: '什麼都沒有', 滿額門檻: 100, id: 'm-2' }));
+    const res = ctx.VIBE_ROUTES.GET.bootstrap({ parameter: {} });
+    expect(res.products.map((p: { id: string }) => p.id)).toEqual(['p-a', 'p-b']);
+    expect(res.warnings).toEqual([
+      '商品「沒價格」缺少售價，已略過',
+      '商品「本子 A」品名重複，只使用第一筆',
+      '組合「空組合」沒有填任何品項，已略過',
+      '活動「什麼都沒有」沒有填折抵金額或贈品，已略過'
+    ]);
+  });
+});
+
+describe('orders', () => {
+  it('writes lines by header name and returns fresh stock', () => {
+    const res = post([order('251029-120000-ABCD', [line('p-a', 2, 200)])]);
+    expect(res).toEqual({ success: true, results: [{ orderNo: '251029-120000-ABCD', status: 'written' }], stock: { 'p-a': 8, 'p-b': null } });
+    const written = sheets['銷售紀錄'].rows[1];
+    expect(written[LOG_HEADERS.indexOf('單號')]).toBe('251029-120000-ABCD');
+    expect(written[LOG_HEADERS.indexOf('小計')]).toBe(400);
+    // vm 內建立的 Date 屬於另一個 realm，用 toString tag 判斷
+    expect(Object.prototype.toString.call(written[LOG_HEADERS.indexOf('時間')])).toBe('[object Date]');
+  });
+
+  it('is idempotent across requests and within one batch', () => {
+    const o = order('NO-1', [line('p-a', 1, 200)]);
+    post([o]);
+    const res = post([o, order('NO-2', [line('p-a', 1, 200)]), order('NO-2', [line('p-a', 1, 200)])]);
+    expect(res.results).toEqual([
+      { orderNo: 'NO-1', status: 'duplicate' },
+      { orderNo: 'NO-2', status: 'written' },
+      { orderNo: 'NO-2', status: 'duplicate' }
+    ]);
+    expect(sheets['銷售紀錄'].getLastRow()).toBe(3);
+    expect(res.stock['p-a']).toBe(8);
+  });
+
+  it('reverts restore stock and cannot be applied twice', () => {
+    post([order('NO-1', [line('p-a', 3, 200)])]);
+    const revert = (no: string) => order(no, [line('p-a', -3, 200)], { revertOf: 'NO-1' });
+    const res = post([revert('R-1'), revert('R-2')]);
+    expect(res.results.map((r: { status: string }) => r.status)).toEqual(['written', 'already_reverted']);
+    expect(res.stock['p-a']).toBe(10);
+    expect(post([revert('R-3')]).results[0].status).toBe('already_reverted');
+  });
+
+  it('adds rows when the sales log grid is full instead of failing', () => {
+    sheets['銷售紀錄'] = new MockSheet('銷售紀錄', [LOG_HEADERS.slice()], 2);
+    load();
+    const res = post([order('NO-1', [line('p-a', 1, 200), line('p-b', 1, 120), line('p-a', 1, 200)])]);
+    expect(res.results[0].status).toBe('written');
+    expect(sheets['銷售紀錄'].getMaxRows()).toBe(4);
+    expect(sheets['銷售紀錄'].getLastRow()).toBe(4);
+  });
+
+  it('marks malformed orders as invalid', () => {
+    const res = post([{ orderNo: 'X', lines: [] }, { lines: [line('p-a', 1, 1)] }]);
+    expect(res.results).toEqual([
+      { orderNo: 'X', status: 'invalid' },
+      { orderNo: '', status: 'invalid' }
+    ]);
+  });
+});
+
+describe('summary', () => {
+  it('totals the day by payment method, netting out reverts', () => {
+    post([
+      order('NO-1', [line('p-a', 2, 200)]),
+      order('NO-2', [line('p-b', 1, 120)], { paymentMethod: 'LINE Pay' }),
+      order('NO-3', [line('p-a', 1, 200)], { createdAt: '2026-10-30T04:00:00.000Z' })
+    ]);
+    post([order('R-1', [line('p-a', -2, 200)], { revertOf: 'NO-1' })]);
+    const res = ctx.VIBE_ROUTES.GET.summary({ parameter: { date: '2026-10-29' } });
+    expect(res).toEqual({ date: '2026-10-29', total: 120, byPaymentMethod: { 現金: 0, 'LINE Pay': 120 }, orderCount: 2, revertCount: 1 });
+  });
+});
