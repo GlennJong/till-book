@@ -195,3 +195,42 @@ describe('legacy data', () => {
     expect(() => buildRules(PRODUCTS, [], [stale])).not.toThrow();
   });
 });
+
+describe('bundle hints', () => {
+  const hintsFor = (items: CartItem[], bundles: BundleRecord[]) => priceCart(items, buildRules(PRODUCTS, bundles, [])).bundleHints;
+  const qty = (pairs: [string, number][]) => pairs.map(([productId, quantity]) => ({ productId, quantity }));
+
+  it('offers the rest of a fixed bundle once part of it is in the cart', () => {
+    const bundles = [bundle('A+吊飾', 220, ['A', '吊飾']), bundle('三件組', 300, ['A', 'B', 'C'])];
+    expect(hintsFor(qty([['A', 1]]), bundles)).toEqual([
+      { kind: 'fixed', bundleName: 'A+吊飾', bundlePrice: 220, missing: ['吊飾'], saving: 50 },
+      { kind: 'fixed', bundleName: '三件組', bundlePrice: 300, missing: ['B', 'C'], saving: 70 }
+    ]);
+    // 湊成之後不再提示這一組；什麼都沒有時也不提示
+    expect(hintsFor(qty([['A', 1], ['吊飾', 1]]), bundles.slice(0, 1))).toEqual([]);
+    expect(hintsFor(qty([['D', 1]]), bundles)).toEqual([]);
+  });
+
+  it('counts how many more a pick-N bundle needs and points at its category', () => {
+    const bundles = [bundle('本子任選 3', 300, ['【分類】本子'], 3)];
+    expect(hintsFor(qty([['A', 1]]), bundles)).toEqual([
+      { kind: 'pick', bundleName: '本子任選 3', bundlePrice: 300, missingCount: 2, category: '本子' }
+    ]);
+    expect(hintsFor(qty([['A', 1], ['B', 1]]), bundles)[0]).toMatchObject({ missingCount: 1 });
+    // 已湊成一組，剩下的還差 2 件 → 再提示一次
+    expect(hintsFor(qty([['A', 2], ['B', 1], ['C', 1]]), bundles)[0]).toMatchObject({ missingCount: 2 });
+    expect(hintsFor(qty([['A', 1], ['B', 1], ['C', 1]]), bundles)).toEqual([]);
+  });
+
+  it('skips bundles it cannot complete for the cashier, and caps the list', () => {
+    // 固定組合含【分類】格子（該分類有多款）：不知道要補哪一款
+    expect(hintsFor(qty([['A', 1]]), [bundle('A+任一贈品', 160, ['A', '【分類】贈品'])])).toEqual([]);
+    // 任選組合還差 3 件以上不提示；固定組合不限件數（一鍵補齊）
+    expect(hintsFor(qty([['A', 1]]), [bundle('本子任選 4', 380, ['【分類】本子'], 4)])).toEqual([]);
+    expect(hintsFor(qty([['A', 1]]), [bundle('四件組', 400, ['A', 'B', 'C', 'D'])])[0]).toMatchObject({ missing: ['B', 'C', 'D'], saving: 50 });
+    // 手動改價的品項不參與組合，也不觸發提示
+    expect(hintsFor([{ productId: 'A', quantity: 1, manualUnitPrice: 100 }], [bundle('A+吊飾', 220, ['A', '吊飾'])])).toEqual([]);
+    const many = [bundle('x1', 200, ['A', '吊飾']), bundle('x2', 200, ['A', '貼紙']), bundle('x3', 200, ['A', '海報'])];
+    expect(hintsFor(qty([['A', 1]]), many)).toHaveLength(2);
+  });
+});

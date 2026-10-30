@@ -16,7 +16,14 @@ export interface BundleRule {
   name: string;
   bundlePrice: number;
   slots: Set<string>[];
+  pickCount: number | null;     // 任選 N 件；null = 固定組合
+  pickCategory: string | null;  // 任選組合的品項只有一個「【分類】xxx」時的分類名稱（湊組合提示用來切換篩選）
 }
+
+// 湊組合提示：購物車裡快湊成某個組合時提醒（見 spec 8 第 12 點）
+export type BundleHint =
+  | { kind: 'fixed'; bundleName: string; bundlePrice: number; missing: string[]; saving: number } // missing：還缺的商品 id（可重複）
+  | { kind: 'pick'; bundleName: string; bundlePrice: number; missingCount: number; category: string | null };
 
 export interface PromotionRule {
   name: string;
@@ -38,6 +45,7 @@ export interface PricingResult {
   subtotal: number;    // 扣除組合折抵後，用來判定滿額門檻
   total: number;       // 應收金額
   nextPromotion?: { name: string; remaining: number }; // 最近一個還沒達到的活動
+  bundleHints: BundleHint[];
 }
 
 // ---------- 規則建立 ----------
@@ -66,11 +74,18 @@ export function buildRules(products: Product[], bundles: BundleRecord[], promoti
       return;
     }
     const sets = resolved.map(r => r.ids!);
+    const base = { name: bundle.name, bundlePrice: bundle.bundlePrice };
     if (bundle.pickCount) {
       const pool = new Set(sets.flatMap(s => [...s]));
-      bundleRules.push({ name: bundle.name, bundlePrice: bundle.bundlePrice, slots: Array.from({ length: bundle.pickCount }, () => pool) });
+      const onlyCategory = bundle.items.length === 1 && bundle.items[0].startsWith(CATEGORY_PREFIX);
+      bundleRules.push({
+        ...base,
+        slots: Array.from({ length: bundle.pickCount }, () => pool),
+        pickCount: bundle.pickCount,
+        pickCategory: onlyCategory ? bundle.items[0].slice(CATEGORY_PREFIX.length) : null
+      });
     } else {
-      bundleRules.push({ name: bundle.name, bundlePrice: bundle.bundlePrice, slots: sets });
+      bundleRules.push({ ...base, slots: sets, pickCount: null, pickCategory: null });
     }
   });
 
@@ -204,17 +219,19 @@ export function priceCart(cart: CartItem[], rules: PricingRules, manualTotal?: n
   const itemsTotal = lines.reduce((sum, l) => sum + l.subtotal, 0);
 
   // 階段一：組合價
-  optimizeBundles(counts, rules.bundles, prices).forEach(app => {
+  const applied = optimizeBundles(counts, rules.bundles, prices);
+  applied.forEach(app => {
     lines.push(discountLine(app.rule.name, app.saving, `組合：${app.rule.name}`));
   });
+  const leftover = applied.reduce((rest, app) => without(rest, app.units), counts);
   const subtotal = lines.reduce((sum, l) => sum + l.subtotal, 0);
 
   // 階段二：滿額活動（一律階梯式）：只給達到的最高門檻那一階；同門檻的多列一起給
   const reached = rules.promotions.filter(p => p.threshold <= subtotal);
   const topThreshold = Math.max(...reached.map(p => p.threshold));
-  const applied = reached.filter(p => p.threshold === topThreshold);
+  const appliedPromotions = reached.filter(p => p.threshold === topThreshold);
 
-  applied.forEach(p => {
+  appliedPromotions.forEach(p => {
     if (p.discountAmount > 0) lines.push(discountLine(p.name, p.discountAmount, `活動：${p.name}`));
     p.gifts.forEach(g => {
       const gift = rules.products.get(g.productId)!;
@@ -247,8 +264,51 @@ export function priceCart(cart: CartItem[], rules: PricingRules, manualTotal?: n
     itemsTotal,
     subtotal,
     total,
-    nextPromotion: upcoming && lines.length > 0 ? { name: upcoming.name, remaining: upcoming.threshold - subtotal } : undefined
+    nextPromotion: upcoming && lines.length > 0 ? { name: upcoming.name, remaining: upcoming.threshold - subtotal } : undefined,
+    bundleHints: bundleHints(leftover, rules.bundles, prices)
   };
+}
+
+// ---------- 湊組合提示 ----------
+
+// 任選組合還差幾件以內才提示（要客人自己挑款式，差太多沒意義）；固定組合一鍵就能補齊，不限件數
+const MAX_PICK_MISSING = 2;
+const MAX_HINTS = 2;
+
+// 只看還沒進組合的商品：已經有一部分的組合
+// 固定組合只提示每格都是指定商品的（含【分類】的格子不知道該補哪一款）
+export function bundleHints(leftover: Map<string, number>, bundles: BundleRule[], prices: Map<string, number>): BundleHint[] {
+  const hints: (BundleHint & { order: number })[] = [];
+
+  bundles.forEach(rule => {
+    if (rule.pickCount) {
+      const pool = rule.slots[0];
+      const have = [...pool].reduce((sum, id) => sum + (leftover.get(id) ?? 0), 0);
+      const missingCount = rule.pickCount - have;
+      if (have > 0 && missingCount > 0 && missingCount <= MAX_PICK_MISSING) {
+        hints.push({ kind: 'pick', bundleName: rule.name, bundlePrice: rule.bundlePrice, missingCount, category: rule.pickCategory, order: missingCount });
+      }
+      return;
+    }
+
+    if (rule.slots.some(slot => slot.size !== 1)) return;
+    const needed = rule.slots.map(slot => [...slot][0]);
+    const remaining = new Map(leftover);
+    const missing = needed.filter(id => {
+      const n = remaining.get(id) ?? 0;
+      if (n > 0) remaining.set(id, n - 1);
+      return n <= 0;
+    });
+    const saving = needed.reduce((sum, id) => sum + prices.get(id)!, 0) - rule.bundlePrice;
+    if (missing.length > 0 && missing.length < needed.length && saving > 0) {
+      hints.push({ kind: 'fixed', bundleName: rule.name, bundlePrice: rule.bundlePrice, missing, saving, order: missing.length - saving / 1e6 });
+    }
+  });
+
+  return hints
+    .sort((a, b) => a.order - b.order)
+    .slice(0, MAX_HINTS)
+    .map(({ order: _order, ...hint }) => hint as BundleHint);
 }
 
 const discountLine = (name: string, amount: number, description: string): OrderLine => ({

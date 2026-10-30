@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import BundleHints from '../components/BundleHints';
 import Modal from '../components/Modal';
 import NumericKeypad from '../components/NumericKeypad';
 import { placeOrder } from '../lib/outbox';
@@ -13,6 +14,8 @@ export default function CheckoutDialog(props: {
   rules: PricingRules;
   onClose: () => void;
   onDone: (orderNo: string) => void;
+  onAddProducts: (productIds: string[]) => void;
+  onPickCategory: (category: string) => void;
 }) {
   const { paymentMethods } = useSettings();
   const { syncNow } = useSync();
@@ -50,6 +53,17 @@ export default function CheckoutDialog(props: {
         <span className="text-stone-600">應收</span>
         <span className="text-4xl font-bold">${pricing.total}</span>
       </div>
+
+      {/* 收錢前最後一次提醒可以湊組合；補齊後應收金額會跟著更新 */}
+      {pricing.bundleHints.length > 0 && (
+        <div className="mt-3">
+          <BundleHints
+            hints={pricing.bundleHints}
+            onAddProducts={props.onAddProducts}
+            onPickCategory={props.onPickCategory}
+          />
+        </div>
+      )}
 
       <label className="mt-3 flex items-center gap-2 text-sm text-stone-600">
         整單改價

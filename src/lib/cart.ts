@@ -2,6 +2,7 @@ import type { CartItem } from './pricing';
 
 export type CartAction =
   | { type: 'add'; productId: string }
+  | { type: 'addMany'; productIds: string[] } // 湊組合：一次加入多件，復原時算一步
   | { type: 'decrement'; productId: string }
   | { type: 'remove'; productId: string }
   | { type: 'setManualPrice'; productId: string; price?: number }
@@ -14,6 +15,8 @@ export function cartReducer(cart: CartItem[], action: CartAction): CartItem[] {
       if (!existing) return [...cart, { productId: action.productId, quantity: 1 }];
       return cart.map(i => (i.productId === action.productId ? { ...i, quantity: i.quantity + 1 } : i));
     }
+    case 'addMany':
+      return action.productIds.reduce((items, productId) => cartReducer(items, { type: 'add', productId }), cart);
     case 'decrement':
       return cart
         .map(i => (i.productId === action.productId ? { ...i, quantity: i.quantity - 1 } : i))

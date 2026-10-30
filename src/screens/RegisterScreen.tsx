@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useReducer, useState } from 'react';
 import { Camera, Gift, Hash, Minus, Plus, ShoppingCart, Trash2, Undo2 } from 'lucide-react';
+import BundleHints from '../components/BundleHints';
 import Modal from '../components/Modal';
 import NumericKeypad from '../components/NumericKeypad';
 import ProductImage from '../components/ProductImage';
@@ -17,8 +18,10 @@ const FLASH_MS = 400;
 
 // 復原按鈕上顯示的「上一步」
 const describeAction = (action: CartAction, products: { id: string; name: string }[]) => {
+  const nameOf = (id: string) => products.find(p => p.id === id)?.name ?? '';
   if (action.type === 'clear') return '清空購物車';
-  const name = products.find(p => p.id === action.productId)?.name ?? '';
+  if (action.type === 'addMany') return '加入 ' + [...new Set(action.productIds)].map(nameOf).join('、');
+  const name = nameOf(action.productId);
   return { add: '加入', decrement: '減少', remove: '移除', setManualPrice: '改價' }[action.type] + ' ' + name;
 };
 
@@ -67,6 +70,26 @@ export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOu
     dispatch({ type: 'add', productId: id });
   };
 
+  // 湊組合提示：一次補齊組合其餘商品（復原算一步）；有賣完的先確認一次
+  const addProducts = (ids: string[]) => {
+    const short = [...new Set(ids)].filter(id => {
+      const { left } = remaining(id);
+      return left !== null && left < ids.filter(x => x === id).length;
+    });
+    if (short.length > 0) {
+      const names = short.map(id => products.find(p => p.id === id)?.name).join('、');
+      if (!window.confirm(`「${names}」數量不足，仍要加入嗎？（例如預購、展後寄送）`)) return;
+    }
+    dispatch({ type: 'addMany', productIds: ids });
+  };
+
+  // 任選組合的提示：切到該分類，關掉購物車與結帳視窗，方便挑剩下的款式
+  const pickCategory = (category: string) => {
+    setSelectedCategories([category]);
+    setCartOpen(false);
+    setCheckingOut(false);
+  };
+
   // 掃碼槍、相機、手動輸入代碼共用：找到就加一件並嗶一聲，找不到播錯誤音並提示
   const addByCode = (raw: string) => {
     const code = raw.trim().toUpperCase();
@@ -90,6 +113,8 @@ export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOu
       cart={cart}
       undoLabel={undoLabel}
       onUndo={undo}
+      onAddProducts={addProducts}
+      onPickCategory={pickCategory}
       pricing={pricing}
       products={products}
       onIncrement={id => addProduct(id)}
@@ -103,14 +128,15 @@ export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOu
   return (
     <div className="flex min-h-0 flex-1 gap-4">
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="mb-3 flex flex-wrap items-center gap-2">
+        {/* 場次與掃碼按鈕同一列：窄螢幕時場次名稱截斷、按鈕只留圖示 */}
+        <div className="mb-3 flex items-center gap-2">
           <EventBar />
-          <div className="ml-auto flex gap-2">
-            <button onClick={() => setEnteringCode(true)} className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1.5 text-sm">
-              <Hash className="size-4 text-stone-500" /> 輸入代碼
+          <div className="ml-auto flex shrink-0 gap-2">
+            <button onClick={() => setEnteringCode(true)} aria-label="輸入代碼" className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1.5 text-sm">
+              <Hash className="size-4 text-stone-500" /> <span className="hidden sm:inline">輸入代碼</span>
             </button>
-            <button onClick={() => setCameraOpen(true)} className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1.5 text-sm">
-              <Camera className="size-4 text-stone-500" /> 相機掃碼
+            <button onClick={() => setCameraOpen(true)} aria-label="相機掃碼" className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1.5 text-sm">
+              <Camera className="size-4 text-stone-500" /> <span className="hidden sm:inline">相機掃碼</span>
             </button>
           </div>
         </div>
@@ -230,6 +256,8 @@ export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOu
         <CheckoutDialog
           cart={cart}
           rules={rules}
+          onAddProducts={addProducts}
+          onPickCategory={pickCategory}
           onClose={() => setCheckingOut(false)}
           onDone={orderNo => {
             dispatch({ type: 'reset' });
@@ -247,6 +275,8 @@ function CartPanel(props: {
   cart: CartState['items'];
   undoLabel: string | null;
   onUndo: () => void;
+  onAddProducts: (productIds: string[]) => void;
+  onPickCategory: (category: string) => void;
   pricing: ReturnType<typeof priceCart>;
   products: ReturnType<typeof useCatalog>['products'];
   onIncrement: (id: string) => void;
@@ -315,6 +345,12 @@ function CartPanel(props: {
           ))}
         </ul>
       )}
+
+      <BundleHints
+        hints={pricing.bundleHints}
+        onAddProducts={props.onAddProducts}
+        onPickCategory={props.onPickCategory}
+      />
 
       {pricing.nextPromotion && (
         <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">

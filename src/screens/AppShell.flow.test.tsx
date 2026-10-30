@@ -254,6 +254,27 @@ describe('register flow', () => {
     await waitFor(() => expect(within(cartPanel()).getByText('本子 A')).toBeTruthy());
   });
 
+  it('bundle hints: add the rest of a bundle in one tap, or jump to the category to pick', async () => {
+    env.sheets['組合價'].rows.push(row(BUNDLE_HEADERS, { is_enabled: true, 組合名稱: 'A+B 套組', 組合價: 300, '品項 1': '本子 A', '品項 2': '本子 B', id: 'b2' }));
+    render(<AppShell connection={connection} onDisconnect={() => {}} />);
+    fireEvent.click(await productButton('本子 A'));
+
+    // 「本子任選 2」還差 1 件；「A+B 套組」還差本子 B
+    expect(await within(cartPanel()).findByText('再 1 件【本子】湊成「本子任選 2」$300')).toBeTruthy();
+    fireEvent.click(within(cartPanel()).getByText('加入「A+B 套組」其餘 1 件，共 $300，省 $50'));
+    await waitFor(() => expect(within(cartPanel()).getByText('本子 B')).toBeTruthy());
+    expect(within(cartPanel()).getByText('$300')).toBeTruthy();
+
+    // 復原一次就把補上的商品退回
+    fireEvent.click(within(cartPanel()).getByRole('button', { name: /復原（加入 本子 B）/ }));
+    await waitFor(() => expect(within(cartPanel()).queryByText('本子 B')).toBeNull());
+
+    // 任選組合的提示：切到該分類
+    fireEvent.click(within(cartPanel()).getByText('再 1 件【本子】湊成「本子任選 2」$300'));
+    const chip = within(screen.getByRole('navigation', { name: '商品分類' })).getByText('本子');
+    expect(chip.getAttribute('aria-pressed')).toBe('true');
+  });
+
   it('settings: add a payment method and use it at checkout', async () => {
     render(<AppShell connection={connection} onDisconnect={() => {}} />);
     tab('設定');

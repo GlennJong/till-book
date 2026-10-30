@@ -11,7 +11,7 @@ export default function EventBar() {
   return (
     <>
       {expired ? (
-        <div className="flex basis-full flex-wrap items-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
           <span className="min-w-0 flex-1">場次「{expired.name}」已結束，新的訂單不會再記到這個場次。</span>
           <button onClick={() => setEditing(true)} className="rounded-lg bg-amber-600 px-3 py-1.5 font-medium text-white">
             開始新場次
@@ -24,17 +24,18 @@ export default function EventBar() {
         <button
           onClick={() => setEditing(true)}
           aria-label="設定場次"
-          className="inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-sm"
+          className="inline-flex min-w-0 items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-sm"
         >
-          <CalendarDays className="size-4 text-stone-500" />
+          <CalendarDays className="size-4 shrink-0 text-stone-500" />
           {active ? (
-            <>
-              目前場次：<span className="font-bold">{active.name}</span>
-            </>
+            <span className="truncate">
+              <span className="hidden sm:inline">目前場次：</span>
+              <span className="font-bold">{active.name}</span>
+            </span>
           ) : (
             <span className="text-stone-500">未指定場次</span>
           )}
-          <ChevronDown className="size-4 text-stone-400" />
+          <ChevronDown className="size-4 shrink-0 text-stone-400" />
         </button>
       )}
 
