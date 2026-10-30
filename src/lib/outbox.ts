@@ -9,6 +9,8 @@ import type { OrderLine, OutboxOrder, Product } from './types';
 const ORDER_NO_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const MAX_BACKOFF_MS = 5 * 60 * 1000;
 const BASE_BACKOFF_MS = 5000;
+// 每個請求最多送幾張單：離線累積大量單據時分批補送，避免單一 GAS 請求跑太久
+export const MAX_BATCH = 50;
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -125,7 +127,17 @@ let inFlight: Promise<SyncResult> | null = null;
 
 export function syncOutbox(scriptUrl: string, options: { applyStock?: boolean } = {}): Promise<SyncResult> {
   if (inFlight) return inFlight;
-  const run = () => runSync(scriptUrl, options.applyStock ?? true);
+  const run = async () => {
+    const total: SyncResult = { sent: 0, synced: 0, rejected: [] };
+    for (;;) {
+      const res = await runSync(scriptUrl, options.applyStock ?? true);
+      total.sent += res.sent;
+      total.synced += res.synced;
+      total.rejected.push(...res.rejected);
+      // 這批沒滿代表送完了；整批都沒成功時也停下，避免空轉
+      if (res.sent < MAX_BATCH || res.synced === 0) return total;
+    }
+  };
   const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
   const current = (async () => (locks ? await locks.request('till-sync', run) : await run()))().finally(() => {
     inFlight = null;
@@ -139,7 +151,8 @@ async function runSync(scriptUrl: string, applyStock: boolean): Promise<SyncResu
   const batch = await db.transaction('rw', db.outbox, async () => {
     const due = (await db.outbox.where('status').equals('PENDING').toArray())
       .filter(o => o.nextRetryAt <= now)
-      .sort((a, b) => a.seq - b.seq);
+      .sort((a, b) => a.seq - b.seq)
+      .slice(0, MAX_BATCH);
     await Promise.all(due.map(o => db.outbox.update(o.orderNo, { status: 'SYNCING' })));
     return due;
   });

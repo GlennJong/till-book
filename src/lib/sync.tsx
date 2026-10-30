@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { ScriptError } from './api';
 import { refreshCatalog } from './catalog';
+import { syncImages } from './images';
 import { db } from './db';
 import { healOutbox, syncOutbox, type SyncResult } from './outbox';
 import { useSettings } from './settings';
@@ -58,6 +59,8 @@ export function SyncProvider({ scriptUrl, children }: { scriptUrl: string; child
     try {
       await refreshCatalog(scriptUrl);
       setError(null);
+      // 商品圖在背景下載，不擋住收銀
+      syncImages(await db.products.toArray()).catch(() => {});
     } catch (err) {
       setError(toScriptError(err));
     } finally {

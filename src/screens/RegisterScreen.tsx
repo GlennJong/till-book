@@ -124,7 +124,7 @@ export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOu
                   onClick={() => addProduct(p.id)}
                   className={`relative flex min-h-16 flex-col overflow-hidden rounded-xl border bg-white text-left transition-shadow active:scale-[0.98] ${count > 0 ? 'border-stone-900' : 'border-stone-200'} ${flashId === p.id ? 'ring-4 ring-emerald-400' : ''}`}
                 >
-                  <ProductImage name={p.name} imageUrl={p.imageUrl} className={`aspect-square w-full ${soldOut ? 'opacity-40 grayscale' : ''}`} />
+                  <ProductImage productId={p.id} name={p.name} imageUrl={p.imageUrl} className={`aspect-square w-full ${soldOut ? 'opacity-40 grayscale' : ''}`} />
                   <div className="p-2">
                     <p className="line-clamp-2 text-sm leading-tight font-medium">{p.name}</p>
                     <p className="mt-1 flex items-baseline justify-between">

@@ -4,6 +4,7 @@ import { simulateNextFailure, type SimulatedFailure } from '../lib/api';
 import type { Connection } from '../lib/connection';
 import { updateSettings, useSettings, type Settings } from '../lib/settings';
 import { useSync } from '../lib/sync';
+import { syncImages, useImageStats } from '../lib/images';
 import { useCatalog } from '../lib/useCatalog';
 import LabelsScreen from './LabelsScreen';
 
@@ -16,7 +17,19 @@ const REFRESH_MODES: { value: Settings['stockRefreshMode']; label: string; hint:
 export default function SettingsScreen({ connection, onDisconnect }: { connection: Connection; onDisconnect: () => void }) {
   const settings = useSettings();
   const { refreshNow, refreshing } = useSync();
-  const { warnings, syncedAt, pendingCount } = useCatalog();
+  const { products, warnings, syncedAt, pendingCount } = useCatalog();
+  const imageStats = useImageStats();
+  const [syncingImages, setSyncingImages] = useState(false);
+
+  const redownloadImages = async () => {
+    setSyncingImages(true);
+    try {
+      const res = await syncImages(products);
+      if (res.failed > 0) window.alert(`有 ${res.failed} 張圖下載失敗：請確認網路，以及圖片在 Drive 上是「知道連結的任何人」可檢視`);
+    } finally {
+      setSyncingImages(false);
+    }
+  };
   const [newMethod, setNewMethod] = useState('');
   const [showLabels, setShowLabels] = useState(false);
 
@@ -55,6 +68,14 @@ export default function SettingsScreen({ connection, onDisconnect }: { connectio
             打開試算表 <ExternalLink className="size-4" />
           </a>
         </div>
+        {imageStats && imageStats.total > 0 && (
+          <p className="mt-3 flex items-center justify-between gap-2 text-sm text-stone-500">
+            <span>商品圖已存到本機 {imageStats.stored} / {imageStats.total} 張（離線也看得到）</span>
+            <button onClick={redownloadImages} disabled={syncingImages} className="shrink-0 rounded-lg bg-stone-100 px-3 py-1 font-medium text-stone-700">
+              {syncingImages ? '下載中…' : '補下載'}
+            </button>
+          </p>
+        )}
         {warnings.length > 0 && (
           <div className="mt-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-800">
             <p className="flex items-center gap-1 font-medium"><AlertTriangle className="size-4" /> 試算表有資料需要修正</p>

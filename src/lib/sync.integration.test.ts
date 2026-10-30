@@ -4,7 +4,7 @@ import { createGasEnvironment, loadTillScript, MockSheet, routeFetchTo, type Gas
 import { simulateNextFailure } from './api';
 import { refreshCatalog } from './catalog';
 import { db } from './db';
-import { availableOnSite, availableStock, healOutbox, placeOrder, revertOrder, syncOutbox } from './outbox';
+import { availableOnSite, availableStock, healOutbox, MAX_BATCH, placeOrder, revertOrder, syncOutbox } from './outbox';
 import { startEvent, toDateKey } from './event';
 import type { OrderLine } from './types';
 
@@ -94,6 +94,18 @@ describe('happy path', () => {
     await syncOutbox(SCRIPT_URL);
     expect(net.requests.filter(r => r.action === 'orders')).toHaveLength(1);
     expect(logOrderNos()).toEqual([a.orderNo, b.orderNo]);
+  });
+});
+
+describe('large backlogs', () => {
+  it('sends orders in batches of MAX_BATCH, in order, each written once', async () => {
+    const orders = [];
+    for (let i = 0; i < MAX_BATCH * 2 + 5; i++) orders.push(await sell(i % 2 ? 'P1' : 'P2', 1));
+    const res = await syncOutbox(SCRIPT_URL);
+    expect(res).toMatchObject({ sent: orders.length, synced: orders.length });
+    const posts = net.requests.filter(r => r.action === 'orders');
+    expect(posts.map(r => r.body.orders.length)).toEqual([MAX_BATCH, MAX_BATCH, 5]);
+    expect(logOrderNos()).toEqual(orders.map(o => o.orderNo));
   });
 });
 

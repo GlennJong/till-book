@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import UpdatePrompt from './components/UpdatePrompt';
 import AppShell from './screens/AppShell';
 import SetupScreen from './screens/SetupScreen';
 import { clearCatalog } from './lib/catalog';
@@ -19,11 +20,16 @@ export default function App() {
     setConnection(null);
   };
 
-  if (connection) return <AppShell key={connection.fileId} connection={connection} onDisconnect={disconnect} />;
-
   return (
-    <main className="min-h-dvh bg-stone-50 px-4 py-6 text-stone-900">
-      <SetupScreen onConnected={connect} />
-    </main>
+    <>
+      <UpdatePrompt />
+      {connection ? (
+        <AppShell key={connection.fileId} connection={connection} onDisconnect={disconnect} />
+      ) : (
+        <main className="min-h-dvh bg-stone-50 px-4 py-6 text-stone-900">
+          <SetupScreen onConnected={connect} />
+        </main>
+      )}
+    </>
   );
 }

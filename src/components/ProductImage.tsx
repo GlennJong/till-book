@@ -1,10 +1,13 @@
 import { useState } from 'react';
+import { useProductImageUrl } from '../lib/images';
 
-// 商品圖：lh3 網址加上 =s400-c 由 Google 端縮圖並裁成正方形；沒有圖或載入失敗時顯示品名首字
-export default function ProductImage({ name, imageUrl, className = '' }: { name: string; imageUrl: string; className?: string }) {
-  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+// 商品圖：優先用同步到本機的縮圖（離線也看得到），否則用 lh3 網址（=s400-c 由 Google 端縮圖並裁成正方形）
+// 沒有圖或載入失敗時顯示品名首字
+export default function ProductImage({ productId, name, imageUrl, className = '' }: { productId: string; name: string; imageUrl: string; className?: string }) {
+  const src = useProductImageUrl(productId, imageUrl);
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
 
-  if (!imageUrl || failedUrl === imageUrl) {
+  if (!src || failedSrc === src) {
     return (
       <div className={`flex items-center justify-center bg-stone-200 text-3xl font-bold text-stone-500 ${className}`}>
         {Array.from(name)[0] ?? '?'}
@@ -14,11 +17,11 @@ export default function ProductImage({ name, imageUrl, className = '' }: { name:
 
   return (
     <img
-      src={`${imageUrl}=s400-c`}
+      src={src}
       alt={name}
       referrerPolicy="no-referrer"
       loading="lazy"
-      onError={() => setFailedUrl(imageUrl)}
+      onError={() => setFailedSrc(src)}
       className={`object-cover ${className}`}
     />
   );
