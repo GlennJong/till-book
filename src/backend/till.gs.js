@@ -10,7 +10,7 @@ var TILL_TABS = {
   log: '銷售紀錄'
 };
 
-/* global TILL_SCRIPT_VERSION -- 由 schema.ts 部署時注入 */
+/* global TILL_SCRIPT_VERSION, TILL_SCHEMA -- 由 schema.ts 部署時注入 */
 var TILL_SYSTEM_COLUMNS = ['is_enabled', 'id', 'created_at', 'updated_at'];
 
 var VIBE_ROUTES = {
@@ -97,6 +97,212 @@ function tillReadDevices(useCache) {
   return devices;
 }
 
+// ---------- 帳本結構自動升級（見 spec 3.5） ----------
+// 腳本升級後第一次 bootstrap 時，依 TILL_SCHEMA 補上舊帳本缺少的分頁、欄位、系統公式與銷量統計版面
+// 只新增、不刪除：使用者自己加的欄位與資料都不動；欄位一律以標題名稱比對
+
+var TILL_SCHEMA_VERSION_KEY = 'tillSchemaVersion';
+var TILL_INPUT_BACKGROUND = '#fff2b3';
+var TILL_READONLY_BACKGROUND = '#ededed';
+
+function tillMigrateIfNeeded() {
+  if (typeof TILL_SCHEMA === 'undefined' || typeof PropertiesService === 'undefined') return [];
+  var props = PropertiesService.getDocumentProperties();
+  if (props.getProperty(TILL_SCHEMA_VERSION_KEY) === TILL_SCHEMA.version) return [];
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(20000)) return []; // 另一個請求正在升級，下次再檢查
+  try {
+    if (props.getProperty(TILL_SCHEMA_VERSION_KEY) === TILL_SCHEMA.version) return [];
+    var changes = tillMigrate(TILL_SCHEMA);
+    props.setProperty(TILL_SCHEMA_VERSION_KEY, TILL_SCHEMA.version);
+    return changes;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function tillMigrate(schema) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var changes = [];
+  var dropdowns = []; // 下拉來源可能在後面的分頁（例如 _選單），等欄位都補齊再設定
+
+  // 1. 分頁與欄位
+  schema.tabs.forEach(function(tab) {
+    var sheet = ss.getSheetByName(tab.name);
+    if (!sheet) {
+      sheet = ss.insertSheet(tab.name);
+      sheet.setFrozenRows(tab.frozenRows);
+      if (tab.hidden) sheet.hideSheet();
+      changes.push('新增分頁「' + tab.name + '」');
+    }
+    if (tab.stats) return;
+    var columns = tab.system
+      ? [{ name: 'is_enabled' }].concat(tab.columns, [{ name: 'id' }, { name: 'created_at' }, { name: 'updated_at' }])
+      : tab.columns;
+    columns.forEach(function(column) {
+      var headers = tillHeaders(sheet);
+      if (headers.indexOf(column.name) !== -1) return;
+      var former = (column.formerly || []).filter(function(name) { return headers.indexOf(name) !== -1; })[0];
+      if (former) {
+        sheet.getRange(1, headers.indexOf(former) + 1).setValue(column.name);
+        changes.push('「' + tab.name + '」欄位「' + former + '」改名為「' + column.name + '」');
+        return;
+      }
+      var col = tillInsertColumn(sheet, tab.system);
+      var header = sheet.getRange(1, col);
+      header.setValue(column.name).setFontWeight('bold');
+      if (column.note) header.setNote(column.note);
+      var body = sheet.getRange(2, col, Math.max(sheet.getMaxRows() - 1, 1), 1);
+      if (column.text) body.setNumberFormat('@');
+      if (column.readonly) body.setBackground(TILL_READONLY_BACKGROUND);
+      if (column.dropdown) dropdowns.push({ sheet: sheet, tab: tab.name, column: column });
+      changes.push('「' + tab.name + '」新增欄位「' + column.name + '」');
+    });
+  });
+
+  // 2. 新欄位的下拉與系統公式：所有欄位都到位後再解析，修正過的公式也會更新到舊帳本
+  dropdowns.forEach(function(d) {
+    var col = tillHeaders(d.sheet).indexOf(d.column.name) + 1;
+    d.sheet.getRange(2, col, Math.max(d.sheet.getMaxRows() - 1, 1), 1).setDataValidation(SpreadsheetApp.newDataValidation()
+      .requireValueInRange(tillPlaceholderRange(d.column.dropdown.range, d.tab), true)
+      .setAllowInvalid(!d.column.dropdown.strict)
+      .build());
+  });
+  schema.tabs.forEach(function(tab) {
+    var sheet = ss.getSheetByName(tab.name);
+    tab.columns.forEach(function(column) {
+      if (!column.formula) return;
+      var cell = sheet.getRange(1, tillHeaders(sheet).indexOf(column.name) + 1);
+      var formula = tillResolvePlaceholders(column.formula, tab.name);
+      if (cell.getFormula() !== formula) cell.setFormula(formula);
+    });
+  });
+
+  // 3. 銷量統計版面
+  if (tillMigrateStats(ss.getSheetByName(schema.stats.tab), schema.stats)) changes.push('更新「' + schema.stats.tab + '」版面');
+  return changes;
+}
+
+// 有系統欄位的分頁，新欄位插在 id 前面；其他分頁加在最後
+function tillInsertColumn(sheet, system) {
+  var headers = tillHeaders(sheet);
+  var idIndex = system ? headers.indexOf('id') : -1;
+  if (idIndex !== -1) {
+    sheet.insertColumnBefore(idIndex + 1);
+    return idIndex + 1;
+  }
+  var col = headers.length + 1;
+  if (col > sheet.getMaxColumns()) sheet.insertColumnsAfter(sheet.getMaxColumns(), col - sheet.getMaxColumns());
+  return col;
+}
+
+function tillHeaders(sheet) {
+  var lastColumn = sheet.getLastColumn();
+  return lastColumn === 0 ? [] : sheet.getRange(1, 1, 1, lastColumn).getValues()[0].map(String);
+}
+
+// {{分頁.欄位}} → '分頁'!X2:X；{{.欄位}} → 目前分頁
+function tillResolvePlaceholders(text, currentTab) {
+  return text.replace(/\{\{\s*([^.{}]*)\.([^{}]+?)\s*\}\}/g, function(_, tabName, column) {
+    var ref = tillPlaceholderColumn(tabName.trim() || currentTab, column.trim());
+    var letter = tillColumnLetter(ref.col);
+    return "'" + ref.tab.replace(/'/g, "''") + "'!" + letter + '2:' + letter;
+  });
+}
+
+function tillPlaceholderRange(placeholder, currentTab) {
+  var match = /\{\{\s*([^.{}]*)\.([^{}]+?)\s*\}\}/.exec(placeholder);
+  var ref = tillPlaceholderColumn(match[1].trim() || currentTab, match[2].trim());
+  return ref.sheet.getRange(2, ref.col, Math.max(ref.sheet.getMaxRows() - 1, 1), 1);
+}
+
+function tillPlaceholderColumn(tabName, column) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(tabName);
+  var index = sheet ? tillHeaders(sheet).indexOf(column) : -1;
+  if (index === -1) throw new Error('找不到欄位「' + tabName + '.' + column + '」');
+  return { tab: tabName, sheet: sheet, col: index + 1 };
+}
+
+function tillColumnLetter(col) {
+  var letter = '';
+  while (col > 0) {
+    letter = String.fromCharCode(65 + ((col - 1) % 26)) + letter;
+    col = Math.floor((col - 1) / 26);
+  }
+  return letter;
+}
+
+function tillA1(cell) {
+  return { row: Number(cell.slice(1)), col: cell.charCodeAt(0) - 64 };
+}
+
+// 銷量統計整張由公式產生：版面不同就重寫；同一版面時保留使用者選好的篩選值
+// 篩選下拉的條件沒變就不重設，使用者勾過的「允許多重選取」才不會被洗掉
+function tillMigrateStats(sheet, stats) {
+  var width = stats.cells.reduce(function(max, row) { return Math.max(max, row.length); }, 0);
+  var rows = stats.cells.map(function(row) {
+    var padded = row.map(function(value) { return tillResolvePlaceholders(value, stats.tab); });
+    while (padded.length < width) padded.push('');
+    return padded;
+  });
+  if (sheet.getMaxColumns() < width) sheet.insertColumnsAfter(sheet.getMaxColumns(), width - sheet.getMaxColumns());
+
+  var range = sheet.getRange(1, 1, rows.length, width);
+  var values = range.getValues();
+  var current = range.getFormulas().map(function(line, r) {
+    return line.map(function(formula, c) { return formula || String(values[r][c]); });
+  });
+  var inputs = {};
+  stats.dropdowns.forEach(function(d) { inputs[d.cell] = true; });
+  var isInput = function(r, c) { return r === 0 && inputs[tillColumnLetter(c + 1) + '1']; };
+  var sameLayout = rows.every(function(line, r) {
+    return line.every(function(value, c) { return isInput(r, c) || current[r][c] === value; });
+  });
+
+  var changed = !sameLayout;
+  if (changed) {
+    // 第 1 列標籤沒變時（只改了公式），保留使用者選好的篩選值
+    var sameLabels = rows[0].every(function(value, c) { return isInput(0, c) || current[0][c] === value; });
+    if (sameLabels) rows[0] = rows[0].map(function(value, c) { return isInput(0, c) ? current[0][c] : value; });
+    range.clearContent();
+    range.setValues(rows);
+  }
+
+  stats.dropdowns.forEach(function(d) {
+    var at = tillA1(d.cell);
+    var cell = sheet.getRange(at.row, at.col);
+    var target = d.list ? null : tillPlaceholderRange(d.range, stats.tab);
+    if (tillSameDropdown(cell.getDataValidation(), d.list, target)) return;
+    var builder = SpreadsheetApp.newDataValidation();
+    builder = d.list ? builder.requireValueInList(d.list, true) : builder.requireValueInRange(target, true);
+    cell.setDataValidation(builder.setAllowInvalid(true).build());
+    cell.setBackground(TILL_INPUT_BACKGROUND).setFontWeight('bold');
+    changed = true;
+  });
+  if (changed) {
+    sheet.getRange(stats.headerRow, 1, 1, width).setFontWeight('bold');
+    sheet.setFrozenRows(stats.headerRow);
+    var protection = sheet.getProtections(SpreadsheetApp.ProtectionType.SHEET)[0] || sheet.protect();
+    protection.setWarningOnly(true);
+    protection.setDescription(stats.protection);
+    protection.setUnprotectedRanges(stats.dropdowns.map(function(d) {
+      var at = tillA1(d.cell);
+      return sheet.getRange(at.row, at.col);
+    }));
+  }
+  return changed;
+}
+
+function tillSameDropdown(rule, list, target) {
+  if (!rule) return false;
+  var values = rule.getCriteriaValues();
+  if (list) return rule.getCriteriaType() === SpreadsheetApp.DataValidationCriteria.VALUE_IN_LIST && JSON.stringify(values[0]) === JSON.stringify(list);
+  return rule.getCriteriaType() === SpreadsheetApp.DataValidationCriteria.VALUE_IN_RANGE &&
+    values[0].getSheet().getName() === target.getSheet().getName() &&
+    values[0].getA1Notation() === target.getA1Notation();
+}
+
 // ---------- 商品代碼自動編號 ----------
 
 var TILL_FIRST_PRODUCT_CODE = 1001;
@@ -139,6 +345,13 @@ function tillAssignProductCodes() {
 
 function tillBootstrap(e) {
   var warnings = [];
+  // 升級失敗不能擋住收銀：記成警告，下次 bootstrap 再試
+  var schemaChanges = [];
+  try {
+    schemaChanges = tillMigrateIfNeeded();
+  } catch (err) {
+    warnings.push('帳本結構自動升級失敗（' + (err && err.message ? err.message : err) + '），下次同步會再試');
+  }
 
   tillAssignProductCodes();
 
@@ -234,6 +447,7 @@ function tillBootstrap(e) {
     promotions: promotions,
     recentEvents: tillRecentEvents(),
     device: e && e.tillDevice ? e.tillDevice : '',
+    schemaChanges: schemaChanges,
     warnings: warnings,
     serverTime: new Date().toISOString(),
     scriptVersion: typeof TILL_SCRIPT_VERSION === 'undefined' ? null : TILL_SCRIPT_VERSION

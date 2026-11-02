@@ -65,7 +65,7 @@ beforeEach(async () => {
       row[p('目前庫存')] = Number(row[p('備貨數量')]) - sold;
     });
   };
-  env = createGasEnvironment(sheets, { customCode: loadTillScript(), recalc });
+  env = createGasEnvironment(sheets, { customCode: loadTillScript(), recalc, migrated: true });
   const routed = routeFetchTo(env);
   net = routed.state;
   vi.stubGlobal('fetch', routed.fetchImpl);

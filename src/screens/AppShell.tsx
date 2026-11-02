@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { SCRIPT_VERSION } from '../backend/schema';
 import { isDeviceError } from '../lib/api';
-import { getSetting } from '../lib/db';
+import { db, getSetting } from '../lib/db';
 import { getAuthorizeUrl } from '@glennjong/vibe-sheets';
-import { BarChart3, Cloud, CloudOff, Receipt, Settings as SettingsIcon, ShoppingCart } from 'lucide-react';
+import { BarChart3, Cloud, CloudOff, Receipt, Settings as SettingsIcon, ShoppingCart, X } from 'lucide-react';
 import { scriptEndpoint, type Connection } from '../lib/connection';
 import { SyncProvider, useSync } from '../lib/sync';
 import { useCatalog } from '../lib/useCatalog';
@@ -40,6 +40,7 @@ function Shell({ connection, onConnectionChange, onDisconnect }: ShellProps) {
   // undefined：還沒同步過；null：腳本早於 1.2.0，不會回報版本
   const scriptVersion = useLiveQuery(() => getSetting<string | null>('scriptVersion'), []);
   const outdated = scriptVersion !== undefined && scriptVersion !== SCRIPT_VERSION;
+  const schemaChanges = useLiveQuery(() => getSetting<string[]>('schemaChanges'), []);
 
   useEffect(() => {
     if (!toast) return;
@@ -71,6 +72,18 @@ function Shell({ connection, onConnectionChange, onDisconnect }: ShellProps) {
           <a href={getAuthorizeUrl(connection.scriptUrl)} target="_blank" rel="noreferrer" className="font-medium underline">
             開啟授權頁面
           </a>
+        </div>
+      )}
+
+      {schemaChanges && schemaChanges.length > 0 && (
+        <div className="mx-4 mb-3 flex gap-2 rounded-xl bg-emerald-50 p-3 text-sm text-emerald-800">
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">帳本已自動升級</p>
+            <ul className="mt-1 list-disc pl-5">{schemaChanges.map(c => <li key={c}>{c}</li>)}</ul>
+          </div>
+          <button onClick={() => db.settings.delete('schemaChanges')} aria-label="關閉" className="self-start p-1">
+            <X className="size-4" />
+          </button>
         </div>
       )}
 

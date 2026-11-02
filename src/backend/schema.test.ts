@@ -151,7 +151,7 @@ describe('Till schema', () => {
     expect(payments).toContain(`SUMPRODUCT(mask * (pay=m), '銷售紀錄'!H2:H)`);
 
     const protection = setup.requests.find((r: any) => r.addProtectedRange?.protectedRange.range.sheetId === 4).addProtectedRange.protectedRange;
-    expect(protection.unprotectedRanges.map((r: any) => [r.startRowIndex, r.startColumnIndex, r.endColumnIndex])).toEqual([[0, 1, 2], [0, 3, 5], [0, 6, 7]]);
+    expect(protection.unprotectedRanges.map((r: any) => [r.startRowIndex, r.startColumnIndex, r.endColumnIndex])).toEqual([[0, 1, 2], [0, 3, 4], [0, 4, 5], [0, 6, 7]]);
   });
 
   it('ships the GAS script with a version', () => {

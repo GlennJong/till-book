@@ -35,6 +35,8 @@ export async function refreshCatalog(scriptUrl: string) {
     await setSetting('catalogWarnings', data.warnings);
     await setSetting('recentEvents', data.recentEvents ?? []);
     await setSetting('deviceName', data.device ?? '');
+    // 只有剛升級的那一次會有內容；留著直到使用者看過關掉
+    if (data.schemaChanges?.length) await setSetting('schemaChanges', data.schemaChanges);
     await setSetting('catalogSyncedAt', data.serverTime);
     await setSetting('scriptVersion', data.scriptVersion ?? null);
   });

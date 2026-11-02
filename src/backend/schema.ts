@@ -4,10 +4,8 @@ import scriptCode from './till.gs.js?raw';
 export const SHEET_PREFIX = 'till-';
 
 // 修改 till.gs.js 後要調高版本號，App 會提示既有的表格升級腳本
-export const SCRIPT_VERSION = '1.8.0';
+export const SCRIPT_VERSION = '1.9.0';
 
-// 版本號注入腳本，bootstrap 會回傳，App 據此提示升級
-export const TILL_SCRIPT = { code: `var TILL_SCRIPT_VERSION = '${SCRIPT_VERSION}';\n${scriptCode}`, version: SCRIPT_VERSION };
 
 const BUNDLE_ITEM_COUNT = 8;
 
@@ -220,6 +218,27 @@ const salesStatsCells = (resolveRange: SetupContext['resolveRange']) => {
   ];
 };
 
+// 存成純文字的欄位：單號、編號、代碼不能被 Sheets 自動轉成數字或日期（例如吃掉開頭的 0）
+const TEXT_COLUMNS: Record<string, string[]> = {
+  銷售紀錄: ['單號', '場次', '沖銷單號', '商品編號'],
+  商品: ['商品代碼']
+};
+
+// 改過名的欄位：舊帳本升級時把舊標題改成新名稱，不另外新增空欄（否則公式會改讀空欄）
+const RENAMED_COLUMNS: Record<string, Record<string, string[]>> = {
+  商品: { 總進貨量: ['備貨數量'] }
+};
+
+// 銷量統計第 1 列的篩選下拉（見 STATS_FILTERS）；不擋輸入，沒開「允許多重選取」時也可以手打「安迪, 貼紙」
+const STATS_DROPDOWNS: { cell: string; range?: string; list?: string[] }[] = [
+  { cell: STATS_FILTERS.event, range: '{{_選單.場次選項}}' },
+  { cell: STATS_FILTERS.category, range: '{{_選單.分類選項}}' },
+  { cell: STATS_FILTERS.mode, list: [MATCH_ALL, MATCH_ANY] },
+  { cell: STATS_FILTERS.payment, range: '{{_選單.付款方式選項}}' }
+];
+const STATS_HEADER_ROW = 5;
+const STATS_PROTECTION_NOTE = '銷量統計由公式產生；只有第 1 列的黃色格子（場次、分類、條件、付款方式）可以切換';
+
 const toColumnLetter = (index: number) => {
   let letter = '';
   let n = index + 1;
@@ -261,49 +280,39 @@ const uniqueColumnRule = (sheetId: number, col: number, index: number) => {
 };
 
 export const tillSetupRequests = ({ sheetIds, columnIndex, resolveRange }: SetupContext): object[] => {
-  // 銷量統計第 1 列可以切換的格子（見 STATS_FILTERS）：B1 場次、D1 分類、E1 條件、G1 付款方式
-  const STATS_INPUTS = [[1, 2], [3, 5], [6, 7]] as const;
-  const statsRow0 = (startColumnIndex: number, endColumnIndex: number) => ({
-    sheetId: sheetIds['銷量統計'],
-    startRowIndex: 0,
-    endRowIndex: 1,
-    startColumnIndex,
-    endColumnIndex
-  });
-  // 不擋輸入：沒開「允許多重選取」時，也可以手打「安迪, 貼紙」
-  const statsDropdown = (start: number, end: number, condition: object) => ({
-    setDataValidation: { range: statsRow0(start, end), rule: { condition, strict: false, showCustomUi: true } }
-  });
-
-  // 銷售紀錄裡的單號、編號一律存成文字，避免被 Sheets 自動轉成數字或日期
-  const textColumns = ['單號', '場次', '沖銷單號', '商品編號'].map(col => ({
-    repeatCell: {
-      range: {
-        sheetId: sheetIds['銷售紀錄'],
-        startRowIndex: 1,
-        startColumnIndex: columnIndex('銷售紀錄', col),
-        endColumnIndex: columnIndex('銷售紀錄', col) + 1
-      },
-      cell: { userEnteredFormat: { numberFormat: { type: 'TEXT' } } },
-      fields: 'userEnteredFormat.numberFormat'
+  // 銷量統計第 1 列可以切換的格子（A1 標記，例如 B1）
+  const statsCell = (a1: string) => {
+    const column = a1.charCodeAt(0) - 65;
+    return { sheetId: sheetIds['銷量統計'], startRowIndex: 0, endRowIndex: 1, startColumnIndex: column, endColumnIndex: column + 1 };
+  };
+  const statsDropdowns = STATS_DROPDOWNS.map(d => ({
+    setDataValidation: {
+      range: statsCell(d.cell),
+      rule: {
+        condition: d.list
+          ? { type: 'ONE_OF_LIST', values: d.list.map(v => ({ userEnteredValue: v })) }
+          : { type: 'ONE_OF_RANGE', values: [{ userEnteredValue: `=${resolveRange(d.range!)}` }] },
+        strict: false,
+        showCustomUi: true
+      }
     }
   }));
 
-  // 商品代碼存成文字，避免被轉成數字（例如吃掉開頭的 0）
+  const textColumns = Object.entries(TEXT_COLUMNS).flatMap(([tab, columns]) =>
+    columns.map(col => ({
+      repeatCell: {
+        range: { sheetId: sheetIds[tab], startRowIndex: 1, startColumnIndex: columnIndex(tab, col), endColumnIndex: columnIndex(tab, col) + 1 },
+        cell: { userEnteredFormat: { numberFormat: { type: 'TEXT' } } },
+        fields: 'userEnteredFormat.numberFormat'
+      }
+    }))
+  );
   const productCodeCol = columnIndex('商品', '商品代碼');
-  const productCodeText = {
-    repeatCell: {
-      range: { sheetId: sheetIds['商品'], startRowIndex: 1, startColumnIndex: productCodeCol, endColumnIndex: productCodeCol + 1 },
-      cell: { userEnteredFormat: { numberFormat: { type: 'TEXT' } } },
-      fields: 'userEnteredFormat.numberFormat'
-    }
-  };
 
   return [
     uniqueColumnRule(sheetIds['商品'], columnIndex('商品', '品名'), 0),
     uniqueColumnRule(sheetIds['商品'], productCodeCol, 1),
     ...textColumns,
-    productCodeText,
     // 商品：資料列加高、圖片預覽欄加寬，並垂直置中
     {
       updateDimensionProperties: {
@@ -339,20 +348,17 @@ export const tillSetupRequests = ({ sheetIds, columnIndex, resolveRange }: Setup
         fields: 'userEnteredValue'
       }
     },
-    statsDropdown(1, 2, { type: 'ONE_OF_RANGE', values: [{ userEnteredValue: `=${resolveRange('{{_選單.場次選項}}')}` }] }),
-    statsDropdown(3, 4, { type: 'ONE_OF_RANGE', values: [{ userEnteredValue: `=${resolveRange('{{_選單.分類選項}}')}` }] }),
-    statsDropdown(4, 5, { type: 'ONE_OF_LIST', values: [{ userEnteredValue: MATCH_ALL }, { userEnteredValue: MATCH_ANY }] }),
-    statsDropdown(6, 7, { type: 'ONE_OF_RANGE', values: [{ userEnteredValue: `=${resolveRange('{{_選單.付款方式選項}}')}` }] }),
-    ...STATS_INPUTS.map(([start, end]) => ({
+    ...statsDropdowns,
+    ...STATS_DROPDOWNS.map(d => ({
       repeatCell: {
-        range: statsRow0(start, end),
+        range: statsCell(d.cell),
         cell: { userEnteredFormat: { backgroundColor: { red: 1, green: 0.95, blue: 0.7 }, textFormat: { bold: true } } },
         fields: 'userEnteredFormat(backgroundColor,textFormat)'
       }
     })),
     {
       repeatCell: {
-        range: { sheetId: sheetIds['銷量統計'], startRowIndex: 4, endRowIndex: 5 },
+        range: { sheetId: sheetIds['銷量統計'], startRowIndex: STATS_HEADER_ROW - 1, endRowIndex: STATS_HEADER_ROW },
         cell: { userEnteredFormat: { textFormat: { bold: true } } },
         fields: 'userEnteredFormat.textFormat'
       }
@@ -361,8 +367,8 @@ export const tillSetupRequests = ({ sheetIds, columnIndex, resolveRange }: Setup
       addProtectedRange: {
         protectedRange: {
           range: { sheetId: sheetIds['銷量統計'] },
-          unprotectedRanges: STATS_INPUTS.map(([start, end]) => statsRow0(start, end)),
-          description: '銷量統計由公式產生；只有第 1 列的黃色格子（場次、分類、條件、付款方式）可以切換',
+          unprotectedRanges: STATS_DROPDOWNS.map(d => statsCell(d.cell)),
+          description: STATS_PROTECTION_NOTE,
           warningOnly: true
         }
       }
@@ -385,4 +391,42 @@ export const tillSetupRequests = ({ sheetIds, columnIndex, resolveRange }: Setup
       }
     }
   ];
+};
+
+// ---------- 帳本結構清單（給 GAS 自動升級舊帳本用，見 spec 3.5） ----------
+// 公式保留 {{分頁.欄位}} 佔位符，由 GAS 依「實際帳本」的欄位位置解析，使用者調整過欄位順序也不會錯
+
+const asArrayFormula = (expression: string) => (/^\s*ARRAYFORMULA\s*\(/i.test(expression) ? expression : `ARRAYFORMULA(${expression})`);
+
+export const TILL_SCHEMA = {
+  version: SCRIPT_VERSION,
+  tabs: TILL_TABS.map(tab => ({
+    name: tab.name,
+    hidden: !!tab.hidden,
+    frozenRows: tab.frozenRows ?? 1,
+    system: tab.systemColumns !== false,
+    stats: tab.name === '銷量統計', // 版面整張由 stats 產生
+    columns: tab.columns.map(col => ({
+      name: col.name,
+      formerly: RENAMED_COLUMNS[tab.name]?.[col.name] ?? [],
+      note: col.note ?? '',
+      formula: col.arrayFormula ? `={"${col.name}"; ${asArrayFormula(col.arrayFormula)}}` : '',
+      text: !!TEXT_COLUMNS[tab.name]?.includes(col.name),
+      readonly: !!(col.readonly || col.arrayFormula),
+      dropdown: col.validation?.kind === 'listFromRange' ? { range: col.validation.range, strict: col.validation.strict ?? true } : null
+    }))
+  })),
+  stats: {
+    tab: '銷量統計',
+    cells: salesStatsCells(expression => expression),
+    dropdowns: STATS_DROPDOWNS,
+    headerRow: STATS_HEADER_ROW,
+    protection: STATS_PROTECTION_NOTE
+  }
+};
+
+// 版本號與帳本結構清單注入腳本；bootstrap 回傳版本，App 據此提示升級
+export const TILL_SCRIPT = {
+  code: `var TILL_SCRIPT_VERSION = '${SCRIPT_VERSION}';\nvar TILL_SCHEMA = ${JSON.stringify(TILL_SCHEMA)};\n${scriptCode}`,
+  version: SCRIPT_VERSION
 };
