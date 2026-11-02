@@ -16,6 +16,7 @@ export interface BootstrapResponse {
   bundles: BundleRecord[];
   promotions: PromotionRecord[];
   recentEvents?: string[]; // 1.5.0 起：最近用過的場次名稱，新到舊
+  device?: string; // 1.8.0 起：這台裝置在 _裝置 分頁的名稱；沒用通行證時為空
   warnings: string[];
   serverTime: string;
   scriptVersion?: string; // 1.2.0 起才有；沒有代表腳本過舊

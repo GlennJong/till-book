@@ -4,7 +4,7 @@ import scriptCode from './till.gs.js?raw';
 export const SHEET_PREFIX = 'till-';
 
 // 修改 till.gs.js 後要調高版本號，App 會提示既有的表格升級腳本
-export const SCRIPT_VERSION = '1.7.0';
+export const SCRIPT_VERSION = '1.8.0';
 
 // 版本號注入腳本，bootstrap 會回傳，App 據此提示升級
 export const TILL_SCRIPT = { code: `var TILL_SCRIPT_VERSION = '${SCRIPT_VERSION}';\n${scriptCode}`, version: SCRIPT_VERSION };
@@ -14,6 +14,7 @@ const BUNDLE_ITEM_COUNT = 8;
 // 把「分類」欄每一格以逗號拆開、去空白，攤平成一欄（LET 的 tags 變數）
 const CATEGORY_OPTIONS = 'tags, FLATTEN(ARRAYFORMULA(IFERROR(TRIM(SPLIT({{商品.分類}}, ",")), "")))';
 const GIFT_ITEM_COUNT = 4;
+const UNCATEGORIZED = '未分類';
 
 export const TILL_TABS: TabDefinition[] = [
   {
@@ -99,7 +100,8 @@ export const TILL_TABS: TabDefinition[] = [
       { name: '說明', type: 'string' },
       { name: '備註', type: 'string' },
       { name: '沖銷單號', type: 'string' },
-      { name: '商品編號', type: 'string', readonly: true }
+      { name: '商品編號', type: 'string', readonly: true },
+      { name: '裝置', type: 'string', note: '結帳的裝置（設定 → 裝置與邀請 取的名稱）；還沒發過邀請時留空' }
     ]
   },
   {
@@ -126,6 +128,18 @@ export const TILL_TABS: TabDefinition[] = [
         // 銷量統計的場次下拉：全部、未指定，加上銷售紀錄出現過的場次（最近開始的在前）
         arrayFormula:
           'LET(events, {{銷售紀錄.場次}}, used, IFERROR(UNIQUE(FILTER(events, events<>"")), ""), { "全部"; "未指定場次"; IFERROR(SORT(used, MATCH(used, events, 0), FALSE), "") })'
+      },
+      {
+        name: '分類選項',
+        type: 'string',
+        // 銷量統計的分類下拉：所有分類（以逗號拆開）去重排序；有商品沒填分類時多一個「未分類」
+        arrayFormula: `LET(${CATEGORY_OPTIONS}, all, { tags; IF(COUNTIFS({{商品.品名}}, "<>", {{商品.分類}}, "")>0, "${UNCATEGORIZED}", "") }, IFERROR(SORT(UNIQUE(FILTER(all, all<>""))), ""))`
+      },
+      {
+        name: '付款方式選項',
+        type: 'string',
+        // 銷量統計的付款方式下拉：銷售紀錄出現過的付款方式（付款方式在 App 設定，Sheet 只看得到用過的）
+        arrayFormula: 'LET(pay, {{銷售紀錄.付款方式}}, IFERROR(SORT(UNIQUE(FILTER(pay, pay<>""))), ""))'
       }
     ]
   }
@@ -133,30 +147,76 @@ export const TILL_TABS: TabDefinition[] = [
 
 export const ALL_EVENTS = '全部';
 export const NO_EVENT = '未指定場次';
+export const MATCH_ALL = '同時符合';
+export const MATCH_ANY = '符合任一';
 
-// 銷量統計：B1 選場次，下方是整場合計與每個商品的售出、贈出、商品金額
-// 全部用 SUMPRODUCT + 遮罩計算（SUMIFS 的條件無法表達「全部，含空白」）
+// 銷量統計第 1 列的篩選：B1 場次、D1 分類、E1 條件、G1 付款方式
+// 下拉可以開「允許多重選取」，多選時格子裡是逗號分隔的值；單選也照常運作
+const STATS_FILTERS = { event: 'B1', category: 'D1', mode: 'E1', payment: 'G1' };
+
+// 下方是合計與每個商品的售出、贈出、商品金額；F 欄起是各分類總覽，J 欄起是各付款方式的實收
+// 全部用 SUMPRODUCT + 遮罩計算（SUMIFS 的條件無法表達「全部，含空白」或多選）
+// 分類依商品表「現在」的分類計算；組合價、滿額折是整張單的折扣，分不到分類，所以分類只算商品金額
 const salesStatsCells = (resolveRange: SetupContext['resolveRange']) => {
   const r = (column: string) => resolveRange(`{{銷售紀錄.${column}}}`);
-  const [event, kind, qty, subtotal, productId] = ['場次', '類型', '數量', '小計', '商品編號'].map(r);
-  const mask = `ARRAYFORMULA((($B$1="${ALL_EVENTS}") + (${event}=IF($B$1="${NO_EVENT}", "", $B$1))) > 0)`;
-  const total = (field: string, lineType?: string) =>
-    `=LET(mask, ${mask}, SUMPRODUCT(mask * ${lineType ? `(${kind}="${lineType}")` : '1'}, ${field}))`;
-
+  const [event, kind, qty, subtotal, productId, payment] = ['場次', '類型', '數量', '小計', '商品編號', '付款方式'].map(r);
   const ids = resolveRange('{{商品.id}}');
   const names = resolveRange('{{商品.品名}}');
+  const productCategories = `IF(${resolveRange('{{商品.分類}}')}="", "${UNCATEGORIZED}", ${resolveRange('{{商品.分類}}')})`;
+  const [eventCell, categoryCell, modeCell, paymentCell] = [STATS_FILTERS.event, STATS_FILTERS.category, STATS_FILTERS.mode, STATS_FILTERS.payment].map(
+    a1 => a1.replace(/([A-Z]+)(\d+)/, '$$$1$$$2')
+  );
+  // 篩選格的值拆成一列（1×k），和整欄比對時會自動展開成 n×k
+  const picks = (cell: string) => `TRIM(SPLIT(${cell}, ","))`;
+  const everyRow = (column: string) => `ARRAYFORMULA(LEN(${column})>=0)`;
+
+  // 場次：留白或含「全部」不篩選；「未指定場次」對應空白
+  const eventMask =
+    `LET(ev, ${picks(eventCell)}, IF(OR(${eventCell}="", ISNUMBER(MATCH("${ALL_EVENTS}", ev, 0))), ${everyRow(event)}, ` +
+    `ARRAYFORMULA(ISNUMBER(MATCH(IF(${event}="", "${NO_EVENT}", ${event}), ev, 0)))))`;
+  // 付款方式：留白不篩選，多選取聯集（一張單只有一種付款方式）
+  const paymentMask = `LET(pk, ${picks(paymentCell)}, IF(${paymentCell}="", ${everyRow(payment)}, ARRAYFORMULA(ISNUMBER(MATCH(${payment}, pk, 0)))))`;
+
+  // 分類字串整理成 ",a,b,"，再用 FIND(",a,") 判斷是否含某個分類（不受正規表示式特殊字元影響）
+  const tagged = (categories: string) => `ARRAYFORMULA(","&REGEXREPLACE(TRIM(${categories}), "\\s*,\\s*", ",")&",")`;
+  const lineTags = tagged(`IF(${productId}="", "", IFERROR(VLOOKUP(${productId}, {${ids}, ${productCategories}}, 2, FALSE), ""))`);
+  // 分類：留白不篩選；每列算出符合幾個選取的分類，「同時符合」要全部符合，「符合任一」至少一個
+  const categoryMatch = (tags: string) =>
+    `LET(ct, ${tags}, cp, ${picks(categoryCell)}, IF(${categoryCell}="", ${everyRow('ct')}, ` +
+    `LET(hits, MMULT(ARRAYFORMULA(ISNUMBER(FIND(","&cp&",", ct))*1), SEQUENCE(COLUMNS(cp), 1, 1, 0)), ` +
+    `ARRAYFORMULA(IF(${modeCell}="${MATCH_ANY}", hits>0, hits=COLUMNS(cp))))))`;
+  const mask = `ARRAYFORMULA(${eventMask} * ${paymentMask} * ${categoryMatch(lineTags)})`;
+  const filtered = `${categoryCell}<>""`;
+
+  const total = (field: string, lineType?: string) =>
+    `=LET(mask, ${mask}, SUMPRODUCT(mask * ${lineType ? `(${kind}="${lineType}")` : '1'}, ${field}))`;
+  // 實收、折扣是整張單的金額，選了分類時不顯示
+  const orderTotal = (field: string, lineType?: string) => `=IF(${filtered}, "—", ${total(field, lineType).slice(1)})`;
+
   const table =
-    `=LET(ids, FILTER(${ids}, ${ids}<>""), names, FILTER(${names}, ${ids}<>""), mask, ${mask}, ` +
+    `=LET(keep, ARRAYFORMULA((${ids}<>"") * ${categoryMatch(tagged(productCategories))}), ids, FILTER(${ids}, keep), names, FILTER(${names}, keep), mask, ${mask}, ` +
     `per, LAMBDA(lineType, field, MAP(ids, LAMBDA(id, SUMPRODUCT((${productId}=id) * (${kind}=lineType) * mask, field)))), ` +
     `IFERROR(HSTACK(names, per("商品", ${qty}), per("贈品", ${qty}), per("商品", ${subtotal})), ""))`;
 
+  // 各分類總覽：受場次、付款方式影響，不受分類篩選影響；依商品金額由高到低
+  const categories = resolveRange('{{_選單.分類選項}}');
+  const overview =
+    `=LET(tags, FILTER(${categories}, ${categories}<>""), lineTags, ${lineTags}, mask, ARRAYFORMULA(${eventMask} * ${paymentMask} * (${kind}="商品")), ` +
+    `per, LAMBDA(field, MAP(tags, LAMBDA(t, SUMPRODUCT(ISNUMBER(FIND(","&t&",", lineTags)) * mask, field)))), ` +
+    `IFERROR(SORT(HSTACK(tags, per(${qty}), per(${subtotal})), 3, FALSE), ""))`;
+
+  // 各付款方式的實收：付款方式是整張單的，只受場次影響；依實收由高到低
+  const payments =
+    `=LET(pay, ${payment}, mask, ${eventMask}, methods, UNIQUE(FILTER(pay, pay<>"")), ` +
+    `IFERROR(SORT(HSTACK(methods, MAP(methods, LAMBDA(m, SUMPRODUCT(mask * (pay=m), ${subtotal})))), 2, FALSE), ""))`;
+
   return [
-    ['場次', ALL_EVENTS],
-    ['實收', total(subtotal), '商品金額', total(subtotal, '商品'), '折扣', total(subtotal, '折扣')],
+    ['場次', ALL_EVENTS, '分類', '', MATCH_ALL, '付款方式', ''],
+    ['實收', orderTotal(subtotal), '商品金額', total(subtotal, '商品'), '折扣', orderTotal(subtotal, '折扣')],
     ['售出件數', total(qty, '商品'), '贈出件數', total(qty, '贈品')],
-    [],
-    ['品名', '售出', '贈出', '商品金額'],
-    [table]
+    [`=IF(${filtered}, "只計入符合分類的商品；實收、折扣是整張單的金額，不分分類", "")`, '', '', '', '', '一個商品有多個分類時每個分類都會算到，各列加總會大於商品金額', '', '', '', '只受場次影響'],
+    ['品名', '售出', '贈出', '商品金額', '', '分類', '售出', '商品金額', '', '付款方式', '實收'],
+    [table, '', '', '', '', overview, '', '', '', payments]
   ];
 };
 
@@ -201,6 +261,19 @@ const uniqueColumnRule = (sheetId: number, col: number, index: number) => {
 };
 
 export const tillSetupRequests = ({ sheetIds, columnIndex, resolveRange }: SetupContext): object[] => {
+  // 銷量統計第 1 列可以切換的格子（見 STATS_FILTERS）：B1 場次、D1 分類、E1 條件、G1 付款方式
+  const STATS_INPUTS = [[1, 2], [3, 5], [6, 7]] as const;
+  const statsRow0 = (startColumnIndex: number, endColumnIndex: number) => ({
+    sheetId: sheetIds['銷量統計'],
+    startRowIndex: 0,
+    endRowIndex: 1,
+    startColumnIndex,
+    endColumnIndex
+  });
+  // 不擋輸入：沒開「允許多重選取」時，也可以手打「安迪, 貼紙」
+  const statsDropdown = (start: number, end: number, condition: object) => ({
+    setDataValidation: { range: statsRow0(start, end), rule: { condition, strict: false, showCustomUi: true } }
+  });
 
   // 銷售紀錄裡的單號、編號一律存成文字，避免被 Sheets 自動轉成數字或日期
   const textColumns = ['單號', '場次', '沖銷單號', '商品編號'].map(col => ({
@@ -266,23 +339,17 @@ export const tillSetupRequests = ({ sheetIds, columnIndex, resolveRange }: Setup
         fields: 'userEnteredValue'
       }
     },
-    {
-      setDataValidation: {
-        range: { sheetId: sheetIds['銷量統計'], startRowIndex: 0, endRowIndex: 1, startColumnIndex: 1, endColumnIndex: 2 },
-        rule: {
-          condition: { type: 'ONE_OF_RANGE', values: [{ userEnteredValue: `=${resolveRange('{{_選單.場次選項}}')}` }] },
-          strict: true,
-          showCustomUi: true
-        }
-      }
-    },
-    {
+    statsDropdown(1, 2, { type: 'ONE_OF_RANGE', values: [{ userEnteredValue: `=${resolveRange('{{_選單.場次選項}}')}` }] }),
+    statsDropdown(3, 4, { type: 'ONE_OF_RANGE', values: [{ userEnteredValue: `=${resolveRange('{{_選單.分類選項}}')}` }] }),
+    statsDropdown(4, 5, { type: 'ONE_OF_LIST', values: [{ userEnteredValue: MATCH_ALL }, { userEnteredValue: MATCH_ANY }] }),
+    statsDropdown(6, 7, { type: 'ONE_OF_RANGE', values: [{ userEnteredValue: `=${resolveRange('{{_選單.付款方式選項}}')}` }] }),
+    ...STATS_INPUTS.map(([start, end]) => ({
       repeatCell: {
-        range: { sheetId: sheetIds['銷量統計'], startRowIndex: 0, endRowIndex: 1, startColumnIndex: 1, endColumnIndex: 2 },
+        range: statsRow0(start, end),
         cell: { userEnteredFormat: { backgroundColor: { red: 1, green: 0.95, blue: 0.7 }, textFormat: { bold: true } } },
         fields: 'userEnteredFormat(backgroundColor,textFormat)'
       }
-    },
+    })),
     {
       repeatCell: {
         range: { sheetId: sheetIds['銷量統計'], startRowIndex: 4, endRowIndex: 5 },
@@ -294,8 +361,8 @@ export const tillSetupRequests = ({ sheetIds, columnIndex, resolveRange }: Setup
       addProtectedRange: {
         protectedRange: {
           range: { sheetId: sheetIds['銷量統計'] },
-          unprotectedRanges: [{ sheetId: sheetIds['銷量統計'], startRowIndex: 0, endRowIndex: 1, startColumnIndex: 1, endColumnIndex: 2 }],
-          description: '銷量統計由公式產生；只有 B1 的場次可以切換',
+          unprotectedRanges: STATS_INPUTS.map(([start, end]) => statsRow0(start, end)),
+          description: '銷量統計由公式產生；只有第 1 列的黃色格子（場次、分類、條件、付款方式）可以切換',
           warningOnly: true
         }
       }

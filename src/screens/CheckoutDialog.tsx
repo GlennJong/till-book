@@ -14,6 +14,7 @@ export default function CheckoutDialog(props: {
   rules: PricingRules;
   onClose: () => void;
   onDone: (orderNo: string) => void;
+  onPark?: () => void; // 客人還要再逛：先掛單，幫下一位結帳
   onAddProducts: (productIds: string[]) => void;
   onPickCategory: (category: string) => void;
 }) {
@@ -142,13 +143,20 @@ export default function CheckoutDialog(props: {
         className="mt-4 w-full rounded-xl border border-stone-300 px-4 py-2"
       />
 
-      <button
-        onClick={submit}
-        disabled={submitting || !manualValid || pricing.lines.length === 0}
-        className="mt-5 h-14 w-full rounded-xl bg-stone-900 text-lg font-bold text-white disabled:opacity-40"
-      >
-        完成結帳（{paymentMethod}）
-      </button>
+      <div className="mt-5 flex gap-2">
+        {props.onPark && (
+          <button onClick={props.onPark} className="h-14 shrink-0 rounded-xl bg-stone-100 px-4 font-medium">
+            掛單
+          </button>
+        )}
+        <button
+          onClick={submit}
+          disabled={submitting || !manualValid || pricing.lines.length === 0}
+          className="h-14 flex-1 rounded-xl bg-stone-900 text-lg font-bold text-white disabled:opacity-40"
+        >
+          完成結帳（{paymentMethod}）
+        </button>
+      </div>
     </Modal>
   );
 }

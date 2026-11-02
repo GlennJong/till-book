@@ -1,20 +1,32 @@
-import { useEffect, useMemo, useReducer, useState } from 'react';
-import { Camera, Gift, Hash, Minus, Plus, ShoppingCart, Trash2, Undo2 } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Camera, Gift, Hash, Minus, Pause, Plus, ShoppingCart, Trash2, Undo2 } from 'lucide-react';
 import BundleHints from '../components/BundleHints';
 import Modal from '../components/Modal';
 import NumericKeypad from '../components/NumericKeypad';
 import ProductImage from '../components/ProductImage';
-import { cartStateReducer, EMPTY_CART, type CartAction, type CartState } from '../lib/cart';
+import { activeCart, MAX_CARTS, reservedElsewhere, type CartAction, type CartColor, type CartState, type CartStateAction, type RegisterState } from '../lib/cart';
 import { beep } from '../lib/feedback';
 import { priceCart } from '../lib/pricing';
 import { useBarcodeScanner } from '../lib/scanner';
 import { useCatalog } from '../lib/useCatalog';
+import { useRegister } from '../lib/useRegister';
 import { useWakeLock } from '../lib/useWakeLock';
 import CameraScanner from './CameraScanner';
 import CheckoutDialog from './CheckoutDialog';
 import EventBar from './EventBar';
 
 const FLASH_MS = 400;
+// 剩這麼多件以下就用橘色提醒快賣完
+const LOW_STOCK = 3;
+
+// 掛單的顏色（class 要寫完整，Tailwind 才掃得到）
+const CART_STYLES: Record<CartColor, { name: string; dot: string; ring: string }> = {
+  sky: { name: '藍', dot: 'bg-sky-500', ring: 'ring-sky-500' },
+  amber: { name: '黃', dot: 'bg-amber-400', ring: 'ring-amber-400' },
+  rose: { name: '紅', dot: 'bg-rose-500', ring: 'ring-rose-500' },
+  violet: { name: '紫', dot: 'bg-violet-500', ring: 'ring-violet-500' },
+  lime: { name: '綠', dot: 'bg-lime-500', ring: 'ring-lime-500' }
+};
 
 // 復原按鈕上顯示的「上一步」
 const describeAction = (action: CartAction, products: { id: string; name: string }[]) => {
@@ -29,8 +41,20 @@ const ALL = '全部';
 
 export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOut: (orderNo: string) => void; onNotice: (message: string) => void }) {
   const { products, rules, stock, onSite, categories } = useCatalog();
-  const [cartState, dispatch] = useReducer(cartStateReducer, EMPTY_CART);
+  const [register, dispatchRegister] = useRegister();
+  const cartState = activeCart(register);
+  const dispatch = (action: CartStateAction) => dispatchRegister({ type: 'cart', action });
   const cart = cartState.items;
+  const canPark = cart.length > 0 && register.carts.length < MAX_CARTS;
+  const park = () => {
+    dispatchRegister({ type: 'park' });
+    setCheckingOut(false);
+  };
+  // 手機底部列：依序切到下一張單
+  const switchToNext = () => {
+    const index = register.carts.findIndex(c => c.color === register.active);
+    dispatchRegister({ type: 'switch', color: register.carts[(index + 1) % register.carts.length].color });
+  };
   const lastAction = cartState.history.at(-1)?.action;
   const undoLabel = lastAction ? describeAction(lastAction, products) : null;
   const undo = () => dispatch({ type: 'undo' });
@@ -54,11 +78,12 @@ export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOu
 
   const pricing = useMemo(() => priceCart(cart, rules), [cart, rules]);
   const inCart = (id: string) => cart.find(i => i.productId === id)?.quantity ?? 0;
-  // 有填現場數量的商品看現場剩餘，否則看總庫存；null 代表不追蹤
+  // 有填現場數量的商品看現場剩餘，否則看總庫存；null 代表不追蹤。掛起的單也算已被拿走
   const remaining = (id: string) => {
     const site = onSite.get(id);
     const tracked = site ?? stock.get(id) ?? null;
-    return { left: tracked === null ? null : tracked - inCart(id), isOnSite: site !== null && site !== undefined };
+    const left = tracked === null ? null : tracked - inCart(id) - reservedElsewhere(register, id);
+    return { left, isOnSite: site !== null && site !== undefined };
   };
 
   const addProduct = (id: string) => {
@@ -110,6 +135,10 @@ export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOu
 
   const cartPanel = (
     <CartPanel
+      register={register}
+      canPark={canPark}
+      onPark={park}
+      onSwitch={color => dispatchRegister({ type: 'switch', color })}
       cart={cart}
       undoLabel={undoLabel}
       onUndo={undo}
@@ -140,14 +169,17 @@ export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOu
             </button>
           </div>
         </div>
-        <nav aria-label="商品分類" className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-3">
-          <button
-            onClick={() => setSelectedCategories([])}
-            aria-pressed={selectedCategories.length === 0}
-            className={`shrink-0 rounded-full px-4 py-2 text-sm font-medium ${selectedCategories.length === 0 ? 'bg-stone-900 text-white' : 'bg-white text-stone-700'}`}
-          >
-            {ALL}
-          </button>
+        <nav aria-label="商品分類" className="-mx-4 flex gap-2 overflow-x-auto pr-4 pb-3">
+          {/* 「全部」固定在最左邊：分類很多、捲到右邊時也能一鍵清除篩選 */}
+          <div className="sticky left-0 z-10 shrink-0 bg-stone-50 pr-1 pl-4 shadow-[8px_0_8px_-6px_rgba(0,0,0,0.15)]">
+            <button
+              onClick={() => setSelectedCategories([])}
+              aria-pressed={selectedCategories.length === 0}
+              className={`rounded-full px-4 py-2 text-sm font-medium ${selectedCategories.length === 0 ? 'bg-stone-900 text-white' : 'bg-white text-stone-700'}`}
+            >
+              {ALL}
+            </button>
+          </div>
           {categories.map(c => (
             <button
               key={c}
@@ -180,7 +212,7 @@ export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOu
                     <p className="mt-1 flex items-baseline justify-between">
                       <span className="font-bold">${p.price}</span>
                       {left !== null && (
-                        <span className={`text-xs ${soldOut ? 'text-red-600' : 'text-stone-500'}`}>
+                        <span className={`text-xs ${soldOut ? 'text-red-600' : left <= LOW_STOCK ? 'font-bold text-amber-600' : 'text-stone-500'}`}>
                           {isOnSite ? '現場' : '剩'} {left}
                         </span>
                       )}
@@ -211,13 +243,24 @@ export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOu
             <Undo2 className="size-4" /> 復原
           </button>
         )}
+        {register.carts.length > 1 && (
+          <button
+            onClick={switchToNext}
+            aria-label={`切換到下一張單（目前${CART_STYLES[register.active].name}單，共 ${register.carts.length} 張）`}
+            className="flex shrink-0 items-center gap-1 rounded-2xl bg-white px-3 shadow-lg"
+          >
+            {register.carts.map(c => (
+              <span key={c.color} className={`rounded-full ${CART_STYLES[c.color].dot} ${c.color === register.active ? 'size-4' : 'size-2.5 opacity-60'}`} />
+            ))}
+          </button>
+        )}
         <button
           onClick={() => setCartOpen(true)}
           disabled={itemCount === 0}
           className="flex min-w-0 flex-1 items-center justify-between rounded-2xl bg-stone-900 px-5 py-4 text-white shadow-lg disabled:bg-stone-400"
         >
           <span className="flex items-center gap-2">
-            <ShoppingCart className="size-5" /> {itemCount} 件
+            {register.carts.length > 1 ? <span className={`size-3 rounded-full ${CART_STYLES[register.active].dot}`} /> : <ShoppingCart className="size-5" />} {itemCount} 件
           </span>
           <span className="text-xl font-bold">${pricing.total}</span>
         </button>
@@ -259,8 +302,9 @@ export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOu
           onAddProducts={addProducts}
           onPickCategory={pickCategory}
           onClose={() => setCheckingOut(false)}
+          onPark={canPark ? park : undefined}
           onDone={orderNo => {
-            dispatch({ type: 'reset' });
+            dispatchRegister({ type: 'checkedOut' });
             setCheckingOut(false);
             setCartOpen(false);
             onCheckedOut(orderNo);
@@ -271,7 +315,41 @@ export default function RegisterScreen({ onCheckedOut, onNotice }: { onCheckedOu
   );
 }
 
+// 掛單的標籤列：每張單一個顏色，點一下切換；「掛單」把目前這張收起來、換一張空的
+function CartTabs(props: { register: RegisterState; canPark: boolean; onPark: () => void; onSwitch: (color: CartColor) => void }) {
+  const { carts, active } = props.register;
+  if (carts.length < 2 && !props.canPark) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {carts.length > 1 &&
+        carts.map(c => {
+          const count = c.cart.items.reduce((sum, i) => sum + i.quantity, 0);
+          return (
+            <button
+              key={c.color}
+              onClick={() => props.onSwitch(c.color)}
+              aria-pressed={c.color === active}
+              aria-label={`${CART_STYLES[c.color].name}單，${count} 件`}
+              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm ${c.color === active ? `bg-white font-bold ring-2 ${CART_STYLES[c.color].ring}` : 'bg-stone-100 text-stone-600'}`}
+            >
+              <span className={`size-3 rounded-full ${CART_STYLES[c.color].dot}`} /> {count} 件
+            </button>
+          );
+        })}
+      {props.canPark && (
+        <button onClick={props.onPark} className="ml-auto inline-flex items-center gap-1 rounded-lg bg-stone-100 px-3 py-1.5 text-sm font-medium">
+          <Pause className="size-4" /> 掛單
+        </button>
+      )}
+    </div>
+  );
+}
+
 function CartPanel(props: {
+  register: RegisterState;
+  canPark: boolean;
+  onPark: () => void;
+  onSwitch: (color: CartColor) => void;
   cart: CartState['items'];
   undoLabel: string | null;
   onUndo: () => void;
@@ -294,9 +372,12 @@ function CartPanel(props: {
     </button>
   );
 
+  const tabs = <CartTabs register={props.register} canPark={props.canPark} onPark={props.onPark} onSwitch={props.onSwitch} />;
+
   if (cart.length === 0) {
     return (
       <div className="flex flex-col items-center gap-3 rounded-2xl bg-white p-6 text-center text-stone-500">
+        {tabs}
         點商品加入購物車
         {undoButton}
       </div>
@@ -305,6 +386,7 @@ function CartPanel(props: {
 
   return (
     <div className="flex flex-col gap-3 rounded-2xl bg-white p-4 lg:sticky lg:top-4">
+      {tabs}
       {undoButton}
       <ul className="divide-y divide-stone-100">
         {cart.map(item => {

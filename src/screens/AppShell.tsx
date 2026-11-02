@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { SCRIPT_VERSION } from '../backend/schema';
+import { isDeviceError } from '../lib/api';
 import { getSetting } from '../lib/db';
 import { getAuthorizeUrl } from '@glennjong/vibe-sheets';
 import { BarChart3, Cloud, CloudOff, Receipt, Settings as SettingsIcon, ShoppingCart } from 'lucide-react';
-import type { Connection } from '../lib/connection';
+import { scriptEndpoint, type Connection } from '../lib/connection';
 import { SyncProvider, useSync } from '../lib/sync';
 import { useCatalog } from '../lib/useCatalog';
 import OrdersScreen from './OrdersScreen';
@@ -21,15 +22,17 @@ const TABS: { id: Tab; label: string; icon: typeof ShoppingCart }[] = [
   { id: 'settings', label: '設定', icon: SettingsIcon }
 ];
 
-export default function AppShell({ connection, onDisconnect }: { connection: Connection; onDisconnect: () => void }) {
+type ShellProps = { connection: Connection; onConnectionChange: (next: Connection) => Promise<void>; onDisconnect: () => void };
+
+export default function AppShell({ connection, onConnectionChange, onDisconnect }: ShellProps) {
   return (
-    <SyncProvider scriptUrl={connection.scriptUrl}>
-      <Shell connection={connection} onDisconnect={onDisconnect} />
+    <SyncProvider scriptUrl={scriptEndpoint(connection)}>
+      <Shell connection={connection} onConnectionChange={onConnectionChange} onDisconnect={onDisconnect} />
     </SyncProvider>
   );
 }
 
-function Shell({ connection, onDisconnect }: { connection: Connection; onDisconnect: () => void }) {
+function Shell({ connection, onConnectionChange, onDisconnect }: ShellProps) {
   const [tab, setTab] = useState<Tab>('register');
   const [toast, setToast] = useState<string | null>(null);
   const { pendingCount } = useCatalog();
@@ -71,17 +74,20 @@ function Shell({ connection, onDisconnect }: { connection: Connection; onDisconn
         </div>
       )}
 
+      {isDeviceError(error) && <div className="mx-4 mb-3 rounded-xl bg-red-50 p-3 text-sm text-red-700">{error!.message}</div>}
+
       {outdated && (
         <div className="mx-4 mb-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-800">
-          這本帳本的試算表腳本是舊版（{scriptVersion ?? '1.2.0 以前'}，最新 {SCRIPT_VERSION}）。請到「設定 → 切換帳本」，在帳本旁按「升級腳本」。
+          這本帳本的試算表腳本是舊版（{scriptVersion ?? '1.2.0 以前'}，最新 {SCRIPT_VERSION}）。
+          {connection.role === 'guest' ? '升級腳本需要帳本擁有者的 Google 帳號，請通知擁有者升級。' : '請到「設定 → 切換帳本」，在帳本旁按「升級腳本」。'}
         </div>
       )}
 
       <main className="flex min-h-0 flex-1 flex-col px-4 pb-20">
         {tab === 'register' && <RegisterScreen onCheckedOut={orderNo => setToast(`已結帳 ${orderNo}`)} onNotice={setToast} />}
         {tab === 'orders' && <OrdersScreen />}
-        {tab === 'summary' && <SummaryScreen scriptUrl={connection.scriptUrl} />}
-        {tab === 'settings' && <SettingsScreen connection={connection} onDisconnect={onDisconnect} />}
+        {tab === 'summary' && <SummaryScreen scriptUrl={scriptEndpoint(connection)} />}
+        {tab === 'settings' && <SettingsScreen connection={connection} onConnectionChange={onConnectionChange} onDisconnect={onDisconnect} />}
       </main>
 
       {toast && (

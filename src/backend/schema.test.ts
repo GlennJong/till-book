@@ -66,7 +66,9 @@ describe('Till schema', () => {
     expect(ranges).toEqual([
       ...Array.from({ length: 8 }, () => [1, `='_選單'!A2:A`]),
       ...Array.from({ length: 4 }, () => [2, `='商品'!B2:B`]),
-      [4, `='_選單'!B2:B`]
+      [4, `='_選單'!B2:B`],
+      [4, `='_選單'!C2:C`],
+      [4, `='_選單'!D2:D`]
     ]);
   });
 
@@ -124,21 +126,32 @@ describe('Till schema', () => {
       row.values.map((v: any) => v.userEnteredValue.stringValue ?? v.userEnteredValue.formulaValue.slice(0, 4))
     );
     expect(text).toEqual([
-      ['場次', '全部'],
-      ['實收', '=LET', '商品金額', '=LET', '折扣', '=LET'],
+      ['場次', '全部', '分類', '', '同時符合', '付款方式', ''],
+      ['實收', '=IF(', '商品金額', '=LET', '折扣', '=IF('],
       ['售出件數', '=LET', '贈出件數', '=LET'],
-      [],
-      ['品名', '售出', '贈出', '商品金額'],
-      ['=LET']
+      ['=IF(', '', '', '', '', '一個商品有多個分類時每個分類都會算到，各列加總會大於商品金額', '', '', '', '只受場次影響'],
+      ['品名', '售出', '贈出', '商品金額', '', '分類', '售出', '商品金額', '', '付款方式', '實收'],
+      ['=LET', '', '', '', '', '=LET', '', '', '', '=LET']
     ]);
     // 每個商品依 id 對應銷售紀錄（N 商品編號、C 類型、J 場次）
     const table = layout.rows[5].values[0].userEnteredValue.formulaValue;
-    expect(table).toContain(`FILTER('商品'!L2:L, '商品'!L2:L<>"")`);
+    expect(table).toContain(`FILTER('商品'!L2:L, keep)`);
     expect(table).toContain(`SUMPRODUCT(('銷售紀錄'!N2:N=id) * ('銷售紀錄'!C2:C=lineType) * mask, field)`);
-    expect(table).toContain(`('銷售紀錄'!J2:J=IF($B$1="未指定場次", "", $B$1))`);
+    // 篩選格可以多選（逗號分隔）：場次 B1、分類 D1（E1 交集或聯集）、付款方式 G1（I 欄）
+    expect(table).toContain(`ARRAYFORMULA(ISNUMBER(MATCH(IF('銷售紀錄'!J2:J="", "未指定場次", '銷售紀錄'!J2:J), ev, 0)))`);
+    expect(table).toContain(`LET(pk, TRIM(SPLIT($G$1, ",")), IF($G$1="", ARRAYFORMULA(LEN('銷售紀錄'!I2:I)>=0), ARRAYFORMULA(ISNUMBER(MATCH('銷售紀錄'!I2:I, pk, 0)))))`);
+    // 分類：銷售紀錄的商品編號對回商品表（L id、D 分類），算出符合幾個選取的分類
+    expect(table).toContain(`VLOOKUP('銷售紀錄'!N2:N, {'商品'!L2:L, IF('商品'!D2:D="", "未分類", '商品'!D2:D)}, 2, FALSE)`);
+    expect(table).toContain(`ARRAYFORMULA(IF($E$1="符合任一", hits>0, hits=COLUMNS(cp)))`);
+    const overview = layout.rows[5].values[5].userEnteredValue.formulaValue;
+    expect(overview).toContain(`FILTER('_選單'!C2:C, '_選單'!C2:C<>"")`);
+    // 付款方式（I 欄）的實收，只看場次
+    const payments = layout.rows[5].values[9].userEnteredValue.formulaValue;
+    expect(payments).toContain(`LET(pay, '銷售紀錄'!I2:I, `);
+    expect(payments).toContain(`SUMPRODUCT(mask * (pay=m), '銷售紀錄'!H2:H)`);
 
     const protection = setup.requests.find((r: any) => r.addProtectedRange?.protectedRange.range.sheetId === 4).addProtectedRange.protectedRange;
-    expect(protection.unprotectedRanges).toEqual([{ sheetId: 4, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 1, endColumnIndex: 2 }]);
+    expect(protection.unprotectedRanges.map((r: any) => [r.startRowIndex, r.startColumnIndex, r.endColumnIndex])).toEqual([[0, 1, 2], [0, 3, 5], [0, 6, 7]]);
   });
 
   it('ships the GAS script with a version', () => {

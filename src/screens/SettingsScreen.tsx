@@ -1,11 +1,14 @@
 import { useState } from 'react';
-import { AlertTriangle, ChevronRight, ExternalLink, LogOut, Plus, RefreshCw, Tags, X } from 'lucide-react';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { AlertTriangle, ChevronRight, ExternalLink, LogOut, Plus, RefreshCw, Smartphone, Tags, X } from 'lucide-react';
 import { simulateNextFailure, type SimulatedFailure } from '../lib/api';
 import type { Connection } from '../lib/connection';
+import { getSetting } from '../lib/db';
 import { updateSettings, useSettings, type Settings } from '../lib/settings';
 import { useSync } from '../lib/sync';
 import { syncImages, useImageStats } from '../lib/images';
 import { useCatalog } from '../lib/useCatalog';
+import DevicesScreen from './DevicesScreen';
 import LabelsScreen from './LabelsScreen';
 
 const REFRESH_MODES: { value: Settings['stockRefreshMode']; label: string; hint: string }[] = [
@@ -14,7 +17,15 @@ const REFRESH_MODES: { value: Settings['stockRefreshMode']; label: string; hint:
   { value: 'MANUAL', label: '手動', hint: '只在按「同步商品資料」時更新' }
 ];
 
-export default function SettingsScreen({ connection, onDisconnect }: { connection: Connection; onDisconnect: () => void }) {
+export default function SettingsScreen(props: {
+  connection: Connection;
+  onConnectionChange: (next: Connection) => Promise<void>;
+  onDisconnect: () => void;
+}) {
+  const { connection, onDisconnect } = props;
+  const isGuest = connection.role === 'guest';
+  const deviceName = useLiveQuery(() => getSetting<string>('deviceName'), []);
+  const [showDevices, setShowDevices] = useState(false);
   const settings = useSettings();
   const { refreshNow, refreshing } = useSync();
   const { products, warnings, syncedAt, pendingCount } = useCatalog();
@@ -49,24 +60,26 @@ export default function SettingsScreen({ connection, onDisconnect }: { connectio
   };
 
   if (showLabels) return <LabelsScreen onBack={() => setShowLabels(false)} />;
+  if (showDevices) return <DevicesScreen connection={connection} onConnectionChange={props.onConnectionChange} onBack={() => setShowDevices(false)} />;
 
   return (
     <div className="mx-auto flex w-full max-w-md flex-col gap-4 pb-4">
       <section className="rounded-2xl bg-white p-5">
         <h2 className="font-bold">{connection.name}</h2>
         <p className="text-sm text-stone-500">{syncedAt ? `商品資料更新於 ${new Date(syncedAt).toLocaleString()}` : '尚未同步'}</p>
+        {deviceName && <p className="text-sm text-stone-500">這台裝置：{deviceName}</p>}
         <div className="mt-3 flex flex-wrap gap-2">
           <button onClick={refreshNow} disabled={refreshing} className="inline-flex items-center gap-1 rounded-xl bg-stone-900 px-4 py-2 font-medium text-white">
             <RefreshCw className={`size-4 ${refreshing ? 'animate-spin' : ''}`} /> 同步商品資料
           </button>
-          <a
+          {!isGuest && <a
             href={`https://docs.google.com/spreadsheets/d/${connection.fileId}`}
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-1 rounded-xl bg-stone-100 px-4 py-2 font-medium"
           >
             打開試算表 <ExternalLink className="size-4" />
-          </a>
+          </a>}
         </div>
         {imageStats && imageStats.total > 0 && (
           <p className="mt-3 flex items-center justify-between gap-2 text-sm text-stone-500">
@@ -92,6 +105,17 @@ export default function SettingsScreen({ connection, onDisconnect }: { connectio
         </span>
         <ChevronRight className="size-5 text-stone-400" />
       </button>
+
+      {!isGuest && (
+        <button onClick={() => setShowDevices(true)} className="flex items-center gap-3 rounded-2xl bg-white p-5 text-left">
+          <Smartphone className="size-5 text-stone-500" />
+          <span className="flex-1">
+            <span className="font-bold">裝置與邀請</span>
+            <span className="block text-sm text-stone-500">邀請其他裝置一起收銀，或停用遺失的裝置</span>
+          </span>
+          <ChevronRight className="size-5 text-stone-400" />
+        </button>
+      )}
 
       <section className="rounded-2xl bg-white p-5">
         <h2 className="font-bold">付款方式</h2>
@@ -160,7 +184,7 @@ export default function SettingsScreen({ connection, onDisconnect }: { connectio
       {import.meta.env.DEV && <FailureSimulator />}
 
       <button onClick={disconnect} className="inline-flex items-center justify-center gap-2 rounded-xl bg-white py-3 font-medium text-stone-600">
-        <LogOut className="size-4" /> 切換帳本
+        <LogOut className="size-4" /> {isGuest ? '離開帳本' : '切換帳本'}
       </button>
     </div>
   );

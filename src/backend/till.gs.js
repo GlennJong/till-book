@@ -1,5 +1,6 @@
 // Till 自訂 Apps Script（以 vibe-sheets 的 script.code 部署為 Custom.gs）
 // 路由：GET ?action=bootstrap / ?action=summary，POST ?action=orders；VIBE_ON_EDIT 為商品自動編號
+// 每個請求都要帶裝置通行證（?key=），見下方「裝置通行證」
 // 欄位一律以標題名稱讀取，使用者可以自由調整欄位順序或新增自己的欄位
 
 var TILL_TABS = {
@@ -21,6 +22,80 @@ var VIBE_ROUTES = {
     orders: tillPostOrders
   }
 };
+
+// ---------- 裝置通行證 ----------
+// _裝置 分頁：通行碼、名稱、建立時間、停用。由擁有者在 App 裡（用 Google 登入）新增，副手只拿得到自己的通行碼
+// 分頁不存在或沒有任何通行碼時不檢查（舊帳本、還沒發過邀請）；有之後，沒帶或已停用的請求一律拒絕
+// vibe-sheets 內建的通用讀寫（?sheet=、PUT、DELETE）一律關閉：Till 用不到，而且會讓拿到網址的人直接讀寫任何分頁
+
+var TILL_DEVICES_TAB = '_裝置';
+var TILL_DEVICE_CACHE_SECONDS = 60;
+
+// 包住 vibe-sheets 基礎腳本（Code.gs，先於這個檔案載入）的入口；單獨測試這個檔案時沒有基礎腳本
+if (typeof doGet === 'function') {
+  doGet = (function(base) {
+    return function(e) { return tillGuard('GET', e, base); };
+  })(doGet);
+}
+if (typeof doPost === 'function') {
+  doPost = (function(base) {
+    return function(e) { return tillGuard('POST', e, base); };
+  })(doPost);
+}
+
+function tillGuard(httpMethod, e, base) {
+  var params = (e && e.parameter) || {};
+  var action = params.method || params.action;
+  if (action === 'authorize') return base(e);
+  if (!action || !VIBE_ROUTES[httpMethod] || typeof VIBE_ROUTES[httpMethod][action] !== 'function') {
+    return createJsonResponse({ error: 'NOT_ALLOWED' });
+  }
+  var device = tillDeviceFor(params.key);
+  if (device.error) return createJsonResponse({ error: device.error });
+  e.tillDevice = device.name;
+  return base(e);
+}
+
+// 回傳 { name } 或 { error: 'DEVICE_UNKNOWN' | 'DEVICE_REVOKED' }
+function tillDeviceFor(key) {
+  var devices = tillReadDevices(true);
+  if (devices.length === 0) return { name: '' };
+  var device = tillFindDevice(devices, key);
+  // 剛發出的邀請可能還不在快取裡，找不到時重讀一次
+  if (!device && key) device = tillFindDevice(tillReadDevices(false), key);
+  if (!device) return { error: 'DEVICE_UNKNOWN' };
+  if (device.disabled) return { error: 'DEVICE_REVOKED' };
+  return { name: device.name };
+}
+
+function tillFindDevice(devices, key) {
+  if (!key) return null;
+  for (var i = 0; i < devices.length; i++) if (devices[i].key === String(key)) return devices[i];
+  return null;
+}
+
+// 停用最多晚 TILL_DEVICE_CACHE_SECONDS 秒生效
+function tillReadDevices(useCache) {
+  var cache = typeof CacheService === 'undefined' ? null : CacheService.getScriptCache();
+  if (useCache && cache) {
+    var cached = cache.get('tillDevices');
+    if (cached) return JSON.parse(cached);
+  }
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TILL_DEVICES_TAB);
+  var devices = [];
+  if (sheet && sheet.getLastRow() >= 2) {
+    var values = sheet.getDataRange().getValues();
+    var col = tillIndexMap(values[0].map(String));
+    for (var i = 1; i < values.length; i++) {
+      var key = tillText(values[i][col['通行碼']]);
+      if (!key) continue;
+      var disabled = values[i][col['停用']];
+      devices.push({ key: key, name: tillText(values[i][col['名稱']]), disabled: disabled === true || String(disabled).toUpperCase() === 'TRUE' });
+    }
+  }
+  if (cache) cache.put('tillDevices', JSON.stringify(devices), TILL_DEVICE_CACHE_SECONDS);
+  return devices;
+}
 
 // ---------- 商品代碼自動編號 ----------
 
@@ -62,7 +137,7 @@ function tillAssignProductCodes() {
 
 // ---------- GET ?action=bootstrap ----------
 
-function tillBootstrap() {
+function tillBootstrap(e) {
   var warnings = [];
 
   tillAssignProductCodes();
@@ -158,6 +233,7 @@ function tillBootstrap() {
     bundles: bundles,
     promotions: promotions,
     recentEvents: tillRecentEvents(),
+    device: e && e.tillDevice ? e.tillDevice : '',
     warnings: warnings,
     serverTime: new Date().toISOString(),
     scriptVersion: typeof TILL_SCRIPT_VERSION === 'undefined' ? null : TILL_SCRIPT_VERSION
@@ -176,6 +252,12 @@ function tillPostOrders(e) {
 
     var sheet = tillSheet(TILL_TABS.log);
     var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String);
+    // 1.8.0 以前建立的帳本沒有「裝置」欄：開始用通行證後自動補在最後
+    if (e.tillDevice && headers.indexOf('裝置') === -1) {
+      tillEnsureColumns(sheet, headers.length + 1);
+      sheet.getRange(1, headers.length + 1).setValue('裝置');
+      headers.push('裝置');
+    }
     var col = tillIndexMap(headers);
 
     var results = [];
@@ -203,7 +285,7 @@ function tillPostOrders(e) {
       seenOrders[orderNo] = true;
       if (revertOf) seenReverts[revertOf] = true;
       order.lines.forEach(function(line) {
-        rows.push(tillLogRow(headers, order, line));
+        rows.push(tillLogRow(headers, order, line, e.tillDevice));
         // 沖銷的數量是負的，扣減等於加回
         if (line.productId) onSiteDelta[line.productId] = (onSiteDelta[line.productId] || 0) + Number(line.quantity || 0);
       });
@@ -224,7 +306,7 @@ function tillPostOrders(e) {
   }
 }
 
-function tillLogRow(headers, order, line) {
+function tillLogRow(headers, order, line, device) {
   var fields = {
     '時間': new Date(order.createdAt),
     '單號': String(order.orderNo),
@@ -239,7 +321,8 @@ function tillLogRow(headers, order, line) {
     '說明': line.description || '',
     '備註': order.note || '',
     '沖銷單號': order.revertOf || '',
-    '商品編號': line.productId || ''
+    '商品編號': line.productId || '',
+    '裝置': device || ''
   };
   return headers.map(function(header) {
     var value = fields[header];
@@ -424,6 +507,11 @@ function tillFillSystemColumns(sheet, col, rowNumbers) {
 function tillEnsureRows(sheet, lastRowNeeded) {
   var maxRows = sheet.getMaxRows();
   if (lastRowNeeded > maxRows) sheet.insertRowsAfter(maxRows, lastRowNeeded - maxRows);
+}
+
+function tillEnsureColumns(sheet, lastColumnNeeded) {
+  var maxColumns = sheet.getMaxColumns();
+  if (lastColumnNeeded > maxColumns) sheet.insertColumnsAfter(maxColumns, lastColumnNeeded - maxColumns);
 }
 
 function tillColumnHas(sheet, colIndex, value) {

@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { ReactHooks, getAuthorizeUrl, type DriveFile } from '@glennjong/vibe-sheets';
 import { ExternalLink, FileSpreadsheet, Loader2, Plus, RefreshCw, ShieldCheck } from 'lucide-react';
 import { SHEET_PREFIX, SCRIPT_VERSION, TILL_SCRIPT, TILL_TABS, tillSetupRequests } from '../backend/schema';
-import type { Connection } from '../lib/connection';
+import { loadConnection, type Connection } from '../lib/connection';
+import { ownerKeyIfNeeded } from '../lib/devices';
 
 const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 
@@ -82,8 +83,21 @@ function SheetPicker({ token, onConnected }: { token: string; onConnected: (conn
     await fetchFiles(SHEET_PREFIX);
   };
 
-  const connect = (file: DriveFile) =>
-    file.scriptUrl && onConnected({ fileId: file.id, name: file.name.replace(SHEET_PREFIX, ''), scriptUrl: file.scriptUrl });
+  const [connecting, setConnecting] = useState(false);
+  // 帳本已經在用裝置通行證時，替這台裝置發一張（同一台重新連線沿用原本的）
+  const connect = async (file: DriveFile) => {
+    if (!file.scriptUrl) return;
+    setConnecting(true);
+    try {
+      const previous = loadConnection();
+      const key = previous?.fileId === file.id && previous.key ? previous.key : await ownerKeyIfNeeded(token, file.id);
+      onConnected({ fileId: file.id, name: file.name.replace(SHEET_PREFIX, ''), scriptUrl: file.scriptUrl, key, role: 'owner' });
+    } catch (err) {
+      window.alert(`無法取得裝置通行證：${err instanceof Error ? err.message : err}`);
+    } finally {
+      setConnecting(false);
+    }
+  };
 
   // 剛建立完成：一定要先授權，否則匿名呼叫會被 Google 拒絕
   if (creationResult?.scriptUrl && creationResult.spreadsheetId) {
@@ -106,7 +120,7 @@ function SheetPicker({ token, onConnected }: { token: string; onConnected: (conn
           </li>
         </ol>
         <button
-          onClick={() => onConnected({ fileId: spreadsheetId, name: sheetName.trim(), scriptUrl })}
+          onClick={() => onConnected({ fileId: spreadsheetId, name: sheetName.trim(), scriptUrl, role: 'owner' })}
           className="mt-6 w-full rounded-xl bg-stone-900 py-3 font-medium text-white"
         >
           授權完成，開始使用
@@ -168,7 +182,7 @@ function SheetPicker({ token, onConnected }: { token: string; onConnected: (conn
                       升級腳本
                     </button>
                   ) : (
-                    <button onClick={() => connect(file)} className="rounded-lg bg-stone-100 px-3 py-1.5 text-sm font-medium">
+                    <button onClick={() => connect(file)} disabled={connecting} className="rounded-lg bg-stone-100 px-3 py-1.5 text-sm font-medium disabled:opacity-40">
                       使用
                     </button>
                   )}

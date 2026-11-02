@@ -25,6 +25,10 @@ export class MockSheet {
   getMaxRows() {
     return this.maxRows;
   }
+  getMaxColumns() {
+    return Math.max(...this.rows.map(r => r.length));
+  }
+  insertColumnsAfter() {}
   insertRowsAfter(_after: number, howMany: number) {
     this.maxRows += howMany;
   }

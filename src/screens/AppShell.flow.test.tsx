@@ -11,7 +11,7 @@ import AppShell from './AppShell';
 const PRODUCT_HEADERS = ['is_enabled', '品名', '售價', '分類', '商品代碼', '圖片連結', '圖片預覽', '總進貨量', '目前庫存', '現場數量', '備註', 'id', 'created_at', 'updated_at'];
 const BUNDLE_HEADERS = ['is_enabled', '組合名稱', '組合價', '任選件數', '品項 1', '品項 2', 'id', 'created_at', 'updated_at'];
 const PROMO_HEADERS = ['is_enabled', '活動名稱', '滿額門檻', '折抵金額', '贈品 1', '贈品 2', 'id', 'created_at', 'updated_at'];
-const LOG_HEADERS = ['時間', '單號', '類型', '品名', '數量', '定價', '成交單價', '小計', '付款方式', '場次', '說明', '備註', '沖銷單號', '商品編號'];
+const LOG_HEADERS = ['時間', '單號', '類型', '品名', '數量', '定價', '成交單價', '小計', '付款方式', '場次', '說明', '備註', '沖銷單號', '商品編號', '裝置'];
 
 const connection = { fileId: 'FILE', name: '測試場', scriptUrl: 'https://script.google.com/macros/s/TEST/exec' };
 
@@ -63,7 +63,7 @@ const tab = (label: string) => fireEvent.click(within(screen.getByRole('navigati
 
 describe('register flow', () => {
   it('sell with bundle + gift, then revert, all reflected on the sheet', async () => {
-    render(<AppShell connection={connection} onDisconnect={() => {}} />);
+    render(<AppShell connection={connection} onConnectionChange={async () => {}} onDisconnect={() => {}} />);
 
     // 商品從試算表同步進來
     fireEvent.click(await productButton('本子 A'));
@@ -104,7 +104,7 @@ describe('register flow', () => {
   });
 
   it('manual price and order-level price are written with descriptions', async () => {
-    render(<AppShell connection={connection} onDisconnect={() => {}} />);
+    render(<AppShell connection={connection} onConnectionChange={async () => {}} onDisconnect={() => {}} />);
     fireEvent.click(await productButton('本子 A'));
 
     // 單品改價 180
@@ -129,7 +129,7 @@ describe('register flow', () => {
   });
 
   it('summary shows today’s total from the sheet', async () => {
-    render(<AppShell connection={connection} onDisconnect={() => {}} />);
+    render(<AppShell connection={connection} onConnectionChange={async () => {}} onDisconnect={() => {}} />);
     fireEvent.click(await productButton('本子 B'));
     fireEvent.click(within(cartPanel()).getByText('結帳'));
     fireEvent.click(await screen.findByRole('button', { name: '完成結帳（現金）' }));
@@ -144,7 +144,7 @@ describe('register flow', () => {
   it('sold-out products ask before selling', async () => {
     env.sheets['商品'].rows[3][PRODUCT_HEADERS.indexOf('總進貨量')] = 0;
     env.recalc();
-    render(<AppShell connection={connection} onDisconnect={() => {}} />);
+    render(<AppShell connection={connection} onConnectionChange={async () => {}} onDisconnect={() => {}} />);
     await screen.findByText('SOLD OUT');
     vi.mocked(window.confirm).mockReturnValueOnce(false);
     fireEvent.click(await productButton('貼紙'));
@@ -155,7 +155,7 @@ describe('register flow', () => {
 
   it('event + on-site quantity: set the event, sell, and both reach the sheet', async () => {
     productRow('本子 A')[PRODUCT_HEADERS.indexOf('現場數量')] = 2;
-    render(<AppShell connection={connection} onDisconnect={() => {}} />);
+    render(<AppShell connection={connection} onConnectionChange={async () => {}} onDisconnect={() => {}} />);
     expect(within(await productButton('本子 A')).getByText('現場 2')).toBeTruthy();
     expect(within(await productButton('本子 B')).getByText('剩 10')).toBeTruthy();
 
@@ -190,7 +190,7 @@ describe('register flow', () => {
   });
 
   it('barcode scanner, code entry and keypad all add products to the cart', async () => {
-    render(<AppShell connection={connection} onDisconnect={() => {}} />);
+    render(<AppShell connection={connection} onConnectionChange={async () => {}} onDisconnect={() => {}} />);
     await productButton('本子 A');
     // 沒有代碼的貼紙由同步時自動編號
     await waitFor(() => expect(productRow('貼紙')[PRODUCT_HEADERS.indexOf('商品代碼')]).toBe('1003'));
@@ -229,7 +229,7 @@ describe('register flow', () => {
     productRow('本子 A')[PRODUCT_HEADERS.indexOf('分類')] = '創作者甲,本子';
     productRow('本子 B')[PRODUCT_HEADERS.indexOf('分類')] = '創作者乙,本子';
     productRow('貼紙')[PRODUCT_HEADERS.indexOf('分類')] = '創作者甲,贈品';
-    render(<AppShell connection={connection} onDisconnect={() => {}} />);
+    render(<AppShell connection={connection} onConnectionChange={async () => {}} onDisconnect={() => {}} />);
     const categoryNav = () => within(screen.getByRole('navigation', { name: '商品分類' }));
     // 購物車還是空的，畫面上的品名都來自商品網格
     const visibleNames = () => screen.queryAllByText(/^(本子 A|本子 B|貼紙)$/).map(el => el.textContent);
@@ -256,7 +256,7 @@ describe('register flow', () => {
 
   it('bundle hints: add the rest of a bundle in one tap, or jump to the category to pick', async () => {
     env.sheets['組合價'].rows.push(row(BUNDLE_HEADERS, { is_enabled: true, 組合名稱: 'A+B 套組', 組合價: 300, '品項 1': '本子 A', '品項 2': '本子 B', id: 'b2' }));
-    render(<AppShell connection={connection} onDisconnect={() => {}} />);
+    render(<AppShell connection={connection} onConnectionChange={async () => {}} onDisconnect={() => {}} />);
     fireEvent.click(await productButton('本子 A'));
 
     // 「本子任選 2」還差 1 件；「A+B 套組」還差本子 B
@@ -275,8 +275,63 @@ describe('register flow', () => {
     expect(chip.getAttribute('aria-pressed')).toBe('true');
   });
 
+  it('parked carts: park a customer, check out the next one, come back; parked items count against stock', async () => {
+    env.sheets['商品'].rows[1][PRODUCT_HEADERS.indexOf('總進貨量')] = 2;
+    env.recalc();
+    const { unmount } = render(<AppShell connection={connection} onConnectionChange={async () => {}} onDisconnect={() => {}} />);
+    fireEvent.click(await productButton('本子 A'));
+    fireEvent.click(await productButton('本子 A'));
+    fireEvent.click(within(cartPanel()).getByRole('button', { name: '掛單' }));
+
+    // 下一位客人：掛起的 2 本占用庫存，本子 A 顯示賣完
+    expect(await screen.findByText('SOLD OUT')).toBeTruthy();
+    fireEvent.click(await productButton('本子 B'));
+    expect(screen.getByRole('button', { name: '藍單，2 件' })).toBeTruthy();
+    fireEvent.click(within(cartPanel()).getByText('結帳'));
+    fireEvent.click(await screen.findByRole('button', { name: '完成結帳（現金）' }));
+    await waitFor(() => expect(log()).toHaveLength(1));
+    expect(log()[0]['品名']).toBe('本子 B');
+
+    // 結完自動切回掛起的單；重新開啟 App 也還在
+    await waitFor(() => expect(within(cartPanel()).getByText('本子 A')).toBeTruthy());
+    await new Promise(r => setTimeout(r, 50));
+    unmount();
+    render(<AppShell connection={connection} onConnectionChange={async () => {}} onDisconnect={() => {}} />);
+    await waitFor(() => expect(within(cartPanel()).getByText('本子 A')).toBeTruthy());
+  });
+
+  it('device keys: orders record the device name, revoked or missing keys are refused, raw sheet access is closed', async () => {
+    // 1.8.0 以前的帳本沒有「裝置」欄，第一次寫入時自動補上
+    env.sheets['銷售紀錄'].rows[0].pop();
+    env.sheets['_裝置'] = new MockSheet('_裝置', [
+      ['通行碼', '名稱', '建立時間', '停用'],
+      ['K1', '櫃台平板', '', false],
+      ['K2', '小明手機', '', true]
+    ]);
+    const { unmount } = render(<AppShell connection={{ ...connection, key: 'K1' }} onConnectionChange={async () => {}} onDisconnect={() => {}} />);
+    fireEvent.click(await productButton('本子 A'));
+    fireEvent.click(within(cartPanel()).getByText('結帳'));
+    fireEvent.click(await screen.findByRole('button', { name: '完成結帳（現金）' }));
+    await waitFor(() => expect(log()).toHaveLength(1));
+    expect(env.sheets['銷售紀錄'].rows[0].at(-1)).toBe('裝置');
+    expect(log()[0]['裝置']).toBe('櫃台平板');
+    unmount();
+
+    // 停用的裝置：同步失敗並顯示原因，單據留在本機
+    render(<AppShell connection={{ ...connection, key: 'K2' }} onConnectionChange={async () => {}} onDisconnect={() => {}} />);
+    expect(await screen.findByText(/通行證已停用/)).toBeTruthy();
+    cleanup();
+    render(<AppShell connection={connection} onConnectionChange={async () => {}} onDisconnect={() => {}} />);
+    expect(await screen.findByText(/這台裝置沒有通行證/)).toBeTruthy();
+
+    // vibe-sheets 內建的通用讀寫一律關閉，授權頁照常
+    expect(JSON.parse(env.ctx.doGet({ parameter: { sheet: '_裝置', key: 'K1' } }).text)).toEqual({ error: 'NOT_ALLOWED' });
+    expect(JSON.parse(env.ctx.doPost({ parameter: { action: 'DELETE', key: 'K1' }, postData: { contents: '{}' } }).text)).toEqual({ error: 'NOT_ALLOWED' });
+    expect(env.ctx.doGet({ parameter: { action: 'authorize' } }).text).toContain('Authorization successful');
+  });
+
   it('settings: add a payment method and use it at checkout', async () => {
-    render(<AppShell connection={connection} onDisconnect={() => {}} />);
+    render(<AppShell connection={connection} onConnectionChange={async () => {}} onDisconnect={() => {}} />);
     tab('設定');
     fireEvent.change(await screen.findByPlaceholderText('例如：街口支付'), { target: { value: '街口支付' } });
     fireEvent.click(screen.getByRole('button', { name: '新增付款方式' }));

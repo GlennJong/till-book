@@ -1,6 +1,7 @@
 import { callScript } from './api';
 import { db, setSetting } from './db';
 import { CURRENT_EVENT_KEY } from './event';
+import { REGISTER_KEY } from './useRegister';
 import type { BootstrapResponse, PromotionRecord } from './types';
 
 // 舊版腳本（1.0 / 1.1）的滿額活動只有單一贈品：giftName + giftQuantity
@@ -33,6 +34,7 @@ export async function refreshCatalog(scriptUrl: string) {
     await db.promotions.bulkPut(data.promotions.map(normalizePromotion));
     await setSetting('catalogWarnings', data.warnings);
     await setSetting('recentEvents', data.recentEvents ?? []);
+    await setSetting('deviceName', data.device ?? '');
     await setSetting('catalogSyncedAt', data.serverTime);
     await setSetting('scriptVersion', data.scriptVersion ?? null);
   });
@@ -44,6 +46,6 @@ export async function refreshCatalog(scriptUrl: string) {
 export async function clearCatalog() {
   await db.transaction('rw', [db.products, db.bundles, db.promotions, db.settings, db.images], async () => {
     await Promise.all([db.products.clear(), db.bundles.clear(), db.promotions.clear(), db.images.clear()]);
-    await db.settings.bulkDelete(['catalogWarnings', 'catalogSyncedAt', 'scriptVersion', 'recentEvents', CURRENT_EVENT_KEY]);
+    await db.settings.bulkDelete(['catalogWarnings', 'catalogSyncedAt', 'scriptVersion', 'recentEvents', 'deviceName', CURRENT_EVENT_KEY, REGISTER_KEY]);
   });
 }
